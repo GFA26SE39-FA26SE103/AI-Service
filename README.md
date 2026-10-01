@@ -41,3 +41,23 @@ Session states are `STOPPED`, `STARTING`, `LIVE`, `RECONNECTING`, and `ERROR`. F
 ## IP Webcam prerequisite
 
 Put the phone and laptop on the same LAN. Start IP Webcam and use the exact MJPEG URL advertised by the app, commonly `http://PHONE_IP:8080/video`. Validate the URL in a browser before starting an AI session.
+
+### Native startup order
+
+1. In IP Webcam, tap **Start server** and note the LAN address shown at the bottom of the phone screen.
+2. Open `http://PHONE_IP:8080` on the laptop and verify the browser can display video. Windows Firewall must allow the private-network connection.
+3. Configure that endpoint in the backend camera connection (`LIVE` + `HTTP`). Keep username/password in their separate fields, never inside the URL.
+4. Start this service with the Uvicorn command above.
+5. Start ASP.NET at `http://localhost:5080`, then React at `http://localhost:5173`.
+6. In React **Cameras**, click **Test & enable**, then **Start AI preview**. A person in view should have a YOLO box and a camera-local ByteTrack ID.
+
+Run the opt-in real-camera contract without printing its URL or credentials:
+
+```powershell
+$env:AI_TEST_STREAM_URL = 'http://PHONE_IP:8080/video'
+$env:AI_TEST_STREAM_USERNAME = ''
+$env:AI_TEST_STREAM_PASSWORD = ''
+& '..\.venv\Scripts\python.exe' -m pytest tests/test_ip_webcam_contract.py -q
+```
+
+If the phone is disconnected, status transitions through `RECONNECTING` and then `ERROR`; this smoke-test feature does not create an Operational Incident. Polling returns the newest annotated JPEG (roughly 3–10 FPS depending on GPU/network), not browser-native video. Stop the preview before editing camera connection details so the restarted session uses only the current credentials.
