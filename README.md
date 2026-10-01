@@ -15,8 +15,9 @@ PyTorch CUDA is installed separately from `requirements.txt` so a normal package
 
 ```powershell
 $python = 'C:\FPT University\CAPSTONE\setup\.venv\Scripts\python.exe'
-& $python -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118
-& $python -m pip install -r 'C:\FPT University\CAPSTONE\setup\ai-service\requirements-dev.txt'
+$uv = 'C:\FPT University\CAPSTONE\setup\tools\uv\uv.exe'
+& $uv pip install --python $python torch torchvision --index-url https://download.pytorch.org/whl/cu118
+& $uv pip install --python $python -r 'C:\FPT University\CAPSTONE\setup\ai-service\requirements-dev.txt'
 & $python -c "import torch; print(torch.__version__, torch.cuda.is_available(), torch.cuda.get_device_name(0))"
 ```
 
