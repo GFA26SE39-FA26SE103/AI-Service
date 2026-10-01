@@ -22,7 +22,22 @@ $python = 'C:\FPT University\CAPSTONE\setup\.venv\Scripts\python.exe'
 
 Copy `.env.example` to `.env` for local overrides. Do not commit camera URLs, usernames, passwords, JWTs, or the internal service key.
 
+Start the private service from this directory:
+
+```powershell
+& '..\.venv\Scripts\python.exe' -m uvicorn app.main:app --host 127.0.0.1 --port 8090
+```
+
+Internal contract:
+
+- `GET /health`
+- `POST /sessions/{cameraId}/start`
+- `GET /sessions/{cameraId}/status`
+- `GET /sessions/{cameraId}/frame`
+- `DELETE /sessions/{cameraId}`
+
+Session states are `STOPPED`, `STARTING`, `LIVE`, `RECONNECTING`, and `ERROR`. Frame reads use `409 AI_PREVIEW_NOT_RUNNING` or `503 AI_FRAME_NOT_READY` when appropriate. Unexpected errors return only `AI_PREVIEW_FAILED`; camera credentials and authenticated stream URLs are never echoed.
+
 ## IP Webcam prerequisite
 
 Put the phone and laptop on the same LAN. Start IP Webcam and use the exact MJPEG URL advertised by the app, commonly `http://PHONE_IP:8080/video`. Validate the URL in a browser before starting an AI session.
-
