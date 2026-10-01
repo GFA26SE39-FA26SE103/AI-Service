@@ -13,6 +13,7 @@ from app.camera_reader import CameraReader
 from app.schemas import SessionStatusResponse, StartSessionRequest
 from app.session_manager import (
     FrameNotReadyError,
+    SessionCapacityError,
     SessionManager,
     SessionNotRunningError,
 )
@@ -40,10 +41,15 @@ def _error_response(status_code: int, code: str, message: str) -> JSONResponse:
 def create_app(settings: Settings | None = None, session_manager: Any | None = None) -> FastAPI:
     resolved_settings = settings or Settings()
     manager = session_manager or SessionManager(
-        CameraReader,
-        lambda request: FrameTracker(request, resolved_settings.jpeg_quality),
+        lambda request: CameraReader(request, resolved_settings.frame_timeout_seconds),
+        lambda request: FrameTracker(
+            request,
+            resolved_settings.jpeg_quality,
+            resolved_settings.max_frame_dimension,
+        ),
         reconnect_attempts=resolved_settings.reconnect_attempts,
         reconnect_delay_seconds=resolved_settings.reconnect_delay_seconds,
+        session_idle_timeout_seconds=resolved_settings.session_idle_timeout_seconds,
     )
     app = FastAPI(title="S.H.E.P.H.E.R.D AI Preview", version="0.1.0")
 
@@ -100,7 +106,14 @@ def create_app(settings: Settings | None = None, session_manager: Any | None = N
             body.half = resolved_settings.half
         if "confidence" not in body.model_fields_set:
             body.confidence = resolved_settings.confidence
-        return await manager.start(camera_id, body)
+        try:
+            return await manager.start(camera_id, body)
+        except SessionCapacityError as error:
+            raise ApiError(
+                409,
+                "AI_SESSION_CAPACITY",
+                "Another AI preview session is already using the GPU.",
+            ) from error
 
     @app.get(
         "/sessions/{camera_id}/status",

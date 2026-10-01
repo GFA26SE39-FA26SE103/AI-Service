@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import os
 from urllib.parse import quote, urlsplit, urlunsplit
+
+os.environ.setdefault("OPENCV_LOG_LEVEL", "SILENT")
+os.environ.setdefault("OPENCV_FFMPEG_DEBUG", "0")
 
 import cv2
 import numpy as np
@@ -19,10 +23,18 @@ def _authenticated_url(request: StartSessionRequest) -> str:
 
 
 class CameraReader:
-    def __init__(self, request: StartSessionRequest) -> None:
-        self._capture = cv2.VideoCapture(_authenticated_url(request), cv2.CAP_FFMPEG)
-        self._capture.set(cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 5_000)
-        self._capture.set(cv2.CAP_PROP_READ_TIMEOUT_MSEC, 5_000)
+    def __init__(self, request: StartSessionRequest, timeout_seconds: float = 5.0) -> None:
+        timeout_ms = max(1, round(timeout_seconds * 1_000))
+        self._capture = cv2.VideoCapture(
+            _authenticated_url(request),
+            cv2.CAP_FFMPEG,
+            [
+                cv2.CAP_PROP_OPEN_TIMEOUT_MSEC,
+                timeout_ms,
+                cv2.CAP_PROP_READ_TIMEOUT_MSEC,
+                timeout_ms,
+            ],
+        )
         self._closed = False
 
     def read(self) -> tuple[bool, np.ndarray | None]:
@@ -35,4 +47,3 @@ class CameraReader:
         if not self._closed:
             self._closed = True
             self._capture.release()
-

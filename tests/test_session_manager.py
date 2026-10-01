@@ -6,7 +6,7 @@ from uuid import uuid4
 import pytest
 
 from app.schemas import SessionState, StartSessionRequest
-from app.session_manager import SessionManager
+from app.session_manager import FrameNotReadyError, SessionCapacityError, SessionManager
 from tests.fakes import RecordingFactories, frame
 
 
@@ -133,3 +133,95 @@ async def test_concurrent_start_and_stop_leave_no_orphan_worker():
     assert manager.active_worker_count == 0
     assert all(reader.closed for reader in factories.readers)
 
+
+@pytest.mark.asyncio
+async def test_start_waits_for_inflight_stop_then_creates_new_worker():
+    factories = RecordingFactories.with_sequences([(True, frame(7))], [(True, frame(8))])
+    manager = SessionManager(factories.reader_factory, factories.tracker_factory)
+    camera_id = uuid4()
+    await manager.start(camera_id, request("old-password"))
+    await wait_until(lambda: manager.status_now(camera_id).state is SessionState.LIVE)
+
+    stop_task = asyncio.create_task(manager.stop(camera_id))
+    restart_task = asyncio.create_task(manager.start(camera_id, request("new-password")))
+    await asyncio.gather(stop_task, restart_task)
+    await wait_until(lambda: manager.status_now(camera_id).state is SessionState.LIVE)
+
+    assert factories.supplied_passwords == ["old-password", "new-password"]
+    assert manager.active_worker_count == 1
+    await manager.stop(camera_id)
+
+
+@pytest.mark.asyncio
+async def test_reconnecting_and_error_never_serve_stale_frame():
+    factories = RecordingFactories.with_sequences([(True, frame(9)), (False, None)], [(False, None)])
+    manager = SessionManager(
+        factories.reader_factory,
+        factories.tracker_factory,
+        reconnect_attempts=1,
+        reconnect_delay_seconds=.05,
+    )
+    camera_id = uuid4()
+    await manager.start(camera_id, request())
+    await wait_until(lambda: manager.status_now(camera_id).state is SessionState.RECONNECTING)
+
+    with pytest.raises(FrameNotReadyError):
+        await manager.frame(camera_id)
+    await wait_until(lambda: manager.status_now(camera_id).state is SessionState.ERROR)
+    with pytest.raises(FrameNotReadyError):
+        await manager.frame(camera_id)
+
+
+@pytest.mark.asyncio
+async def test_successful_frame_resets_reconnect_budget():
+    factories = RecordingFactories.with_sequences(
+        [(True, frame(10)), (False, None)],
+        [(True, frame(11)), (False, None)],
+        [(True, frame(12))],
+    )
+    manager = SessionManager(
+        factories.reader_factory,
+        factories.tracker_factory,
+        reconnect_attempts=1,
+        reconnect_delay_seconds=0,
+    )
+    camera_id = uuid4()
+    await manager.start(camera_id, request())
+
+    await wait_until(lambda: manager.status_now(camera_id).frame_sequence >= 3)
+
+    assert manager.status_now(camera_id).state is SessionState.LIVE
+    await manager.stop(camera_id)
+
+
+@pytest.mark.asyncio
+async def test_only_one_gpu_session_can_run_at_a_time():
+    factories = RecordingFactories.with_sequences([(True, frame(13))], [(True, frame(14))])
+    manager = SessionManager(factories.reader_factory, factories.tracker_factory)
+    first, second = uuid4(), uuid4()
+    await manager.start(first, request())
+    await wait_until(lambda: manager.status_now(first).state is SessionState.LIVE)
+
+    with pytest.raises(SessionCapacityError):
+        await manager.start(second, request())
+
+    await manager.stop(first)
+    await manager.start(second, request())
+    await manager.stop(second)
+
+
+@pytest.mark.asyncio
+async def test_idle_session_self_stops_when_client_polling_disappears():
+    factories = RecordingFactories.with_sequences([(True, frame(15))])
+    manager = SessionManager(
+        factories.reader_factory,
+        factories.tracker_factory,
+        session_idle_timeout_seconds=.03,
+    )
+    camera_id = uuid4()
+    await manager.start(camera_id, request())
+
+    await wait_until(lambda: manager.status_now(camera_id).state is SessionState.STOPPED)
+
+    assert manager.active_worker_count == 0
+    assert factories.readers[0].closed

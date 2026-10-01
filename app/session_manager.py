@@ -30,6 +30,10 @@ class FrameNotReadyError(RuntimeError):
     pass
 
 
+class SessionCapacityError(RuntimeError):
+    pass
+
+
 @dataclass
 class _Session:
     status: SessionStatusResponse
@@ -37,6 +41,7 @@ class _Session:
     task: asyncio.Task[None] | None = None
     reader: Reader | None = None
     latest_jpeg: bytes | None = None
+    last_access: float = 0.0
 
 
 def _utc_now() -> datetime:
@@ -51,13 +56,16 @@ class SessionManager:
         *,
         reconnect_attempts: int = 5,
         reconnect_delay_seconds: float = 1.0,
+        session_idle_timeout_seconds: float = 30.0,
     ) -> None:
         self._reader_factory = reader_factory
         self._tracker_factory = tracker_factory
         self._reconnect_attempts = max(0, reconnect_attempts)
         self._reconnect_delay_seconds = max(0, reconnect_delay_seconds)
+        self._session_idle_timeout_seconds = max(0.01, session_idle_timeout_seconds)
         self._sessions: dict[UUID, _Session] = {}
         self._locks: dict[UUID, asyncio.Lock] = {}
+        self._capacity_lock = asyncio.Lock()
 
     @property
     def active_worker_count(self) -> int:
@@ -67,29 +75,43 @@ class SessionManager:
         return self._locks.setdefault(camera_id, asyncio.Lock())
 
     async def start(self, camera_id: UUID, request: StartSessionRequest) -> SessionStatusResponse:
-        async with self._lock_for(camera_id):
-            existing = self._sessions.get(camera_id)
-            if existing and existing.task and not existing.task.done():
-                return existing.status.model_copy(deep=True)
+        async with self._capacity_lock:
+            async with self._lock_for(camera_id):
+                existing = self._sessions.get(camera_id)
+                if existing and existing.task and not existing.task.done():
+                    existing.last_access = asyncio.get_running_loop().time()
+                    return existing.status.model_copy(deep=True)
 
-            now = _utc_now()
-            session = _Session(
-                status=SessionStatusResponse(
-                    camera_id=camera_id,
-                    state=SessionState.STARTING,
-                    started_at=now,
-                    updated_at=now,
-                ),
-                cancel=asyncio.Event(),
-            )
-            self._sessions[camera_id] = session
-            session.task = asyncio.create_task(
-                self._run(camera_id, session, request),
-                name=f"ai-preview-{camera_id}",
-            )
-            return session.status.model_copy(deep=True)
+                if any(
+                    other_id != camera_id
+                    and session.task
+                    and not session.task.done()
+                    for other_id, session in self._sessions.items()
+                ):
+                    raise SessionCapacityError("AI_SESSION_CAPACITY")
+
+                now = _utc_now()
+                session = _Session(
+                    status=SessionStatusResponse(
+                        camera_id=camera_id,
+                        state=SessionState.STARTING,
+                        started_at=now,
+                        updated_at=now,
+                    ),
+                    cancel=asyncio.Event(),
+                    last_access=asyncio.get_running_loop().time(),
+                )
+                self._sessions[camera_id] = session
+                session.task = asyncio.create_task(
+                    self._run(camera_id, session, request),
+                    name=f"ai-preview-{camera_id}",
+                )
+                return session.status.model_copy(deep=True)
 
     async def status(self, camera_id: UUID) -> SessionStatusResponse:
+        session = self._sessions.get(camera_id)
+        if session:
+            session.last_access = asyncio.get_running_loop().time()
         return self.status_now(camera_id).model_copy(deep=True)
 
     def status_now(self, camera_id: UUID) -> SessionStatusResponse:
@@ -106,25 +128,20 @@ class SessionManager:
         session = self._sessions.get(camera_id)
         if not session or session.status.state is SessionState.STOPPED:
             raise SessionNotRunningError("AI_PREVIEW_NOT_RUNNING")
-        if session.latest_jpeg is None:
+        session.last_access = asyncio.get_running_loop().time()
+        if session.status.state is not SessionState.LIVE or session.latest_jpeg is None:
             raise FrameNotReadyError("AI_FRAME_NOT_READY")
         return session.latest_jpeg
 
     async def stop(self, camera_id: UUID) -> SessionStatusResponse:
-        task: asyncio.Task[None] | None = None
         async with self._lock_for(camera_id):
             session = self._sessions.get(camera_id)
             if not session:
                 return self.status_now(camera_id).model_copy(deep=True)
             session.cancel.set()
-            self._close_reader(session, session.reader)
             task = session.task
-
-        if task and task is not asyncio.current_task():
-            await task
-
-        async with self._lock_for(camera_id):
-            session = self._sessions[camera_id]
+            if task and task is not asyncio.current_task():
+                await task
             self._set_state(session, SessionState.STOPPED)
             session.latest_jpeg = None
             return session.status.model_copy(deep=True)
@@ -141,11 +158,17 @@ class SessionManager:
             tracker = await asyncio.to_thread(self._tracker_factory, request)
             attempt = 0
             while not session.cancel.is_set():
+                if self._is_idle(session):
+                    session.cancel.set()
+                    break
                 reader = await asyncio.to_thread(self._reader_factory, request)
                 session.reader = reader
                 disconnected = False
                 try:
                     while not session.cancel.is_set():
+                        if self._is_idle(session):
+                            session.cancel.set()
+                            break
                         ok, frame = await asyncio.to_thread(reader.read)
                         if not ok or frame is None:
                             disconnected = True
@@ -155,6 +178,7 @@ class SessionManager:
                         session.latest_jpeg = encoded
                         session.status.frame_sequence += 1
                         self._set_state(session, SessionState.LIVE)
+                        attempt = 0
                         await asyncio.sleep(0)
                 finally:
                     self._close_reader(session, reader)
@@ -165,10 +189,12 @@ class SessionManager:
                     continue
                 if attempt >= self._reconnect_attempts:
                     session.status.error_code = "CAMERA_STREAM_UNAVAILABLE"
+                    session.latest_jpeg = None
                     self._set_state(session, SessionState.ERROR)
                     return
 
                 attempt += 1
+                session.latest_jpeg = None
                 self._set_state(session, SessionState.RECONNECTING)
                 try:
                     await asyncio.wait_for(
@@ -187,6 +213,12 @@ class SessionManager:
                 self._set_state(session, SessionState.STOPPED)
             session.task = None
 
+    def _is_idle(self, session: _Session) -> bool:
+        return (
+            asyncio.get_running_loop().time() - session.last_access
+            >= self._session_idle_timeout_seconds
+        )
+
     @staticmethod
     def _set_state(session: _Session, state: SessionState) -> None:
         session.status.state = state
@@ -200,4 +232,3 @@ class SessionManager:
             return
         session.reader = None
         reader.close()
-

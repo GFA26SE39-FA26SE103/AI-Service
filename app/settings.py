@@ -24,4 +24,5 @@ class Settings(BaseSettings):
     reconnect_attempts: int = Field(default=5, ge=0)
     reconnect_delay_seconds: float = Field(default=1.0, ge=0)
     frame_timeout_seconds: float = Field(default=5.0, gt=0)
-
+    max_frame_dimension: int = Field(default=1280, ge=320, le=3840)
+    session_idle_timeout_seconds: float = Field(default=30.0, gt=0)

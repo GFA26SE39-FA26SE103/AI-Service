@@ -8,7 +8,7 @@ from pydantic import SecretStr
 
 from app.main import create_app
 from app.schemas import SessionState, SessionStatusResponse
-from app.session_manager import FrameNotReadyError, SessionNotRunningError
+from app.session_manager import FrameNotReadyError, SessionCapacityError, SessionNotRunningError
 from app.settings import Settings
 
 
@@ -17,6 +17,7 @@ class FakeSessionManager:
         self.state = SessionState.STOPPED
         self.camera_id: UUID | None = None
         self.frame_error: Exception | None = None
+        self.start_error: Exception | None = None
 
     def _status(self, camera_id: UUID) -> SessionStatusResponse:
         return SessionStatusResponse(
@@ -28,6 +29,8 @@ class FakeSessionManager:
         )
 
     async def start(self, camera_id, _request):
+        if self.start_error:
+            raise self.start_error
         self.camera_id = camera_id
         self.state = SessionState.LIVE
         return self._status(camera_id)
@@ -115,3 +118,13 @@ def test_internal_key_is_required_when_configured():
     assert missing.json()["code"] == "AI_SERVICE_UNAUTHORIZED"
     assert accepted.status_code == 200
 
+
+def test_start_returns_stable_capacity_error():
+    camera_id = uuid4()
+    manager = FakeSessionManager()
+    manager.start_error = SessionCapacityError("AI_SESSION_CAPACITY")
+
+    response = client(manager).post(f"/sessions/{camera_id}/start", json=payload())
+
+    assert response.status_code == 409
+    assert response.json()["code"] == "AI_SESSION_CAPACITY"
