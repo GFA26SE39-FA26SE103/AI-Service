@@ -41,7 +41,7 @@ def _error_response(status_code: int, code: str, message: str) -> JSONResponse:
 def create_app(settings: Settings | None = None, session_manager: Any | None = None) -> FastAPI:
     resolved_settings = settings or Settings()
     manager = session_manager or SessionManager(
-        lambda request: CameraReader(request, resolved_settings.frame_timeout_seconds),
+        lambda request: CameraReader(request, resolved_settings.frame_timeout_seconds, recorded_root=resolved_settings.recorded_root),
         lambda request: FrameTracker(
             request,
             resolved_settings.jpeg_quality,

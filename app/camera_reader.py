@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import os
+import math
+from pathlib import Path
 from urllib.parse import quote, urlsplit, urlunsplit
+from urllib.request import url2pathname
 
 os.environ.setdefault("OPENCV_LOG_LEVEL", "SILENT")
 os.environ.setdefault("OPENCV_FFMPEG_DEBUG", "0")
@@ -23,7 +26,22 @@ def _authenticated_url(request: StartSessionRequest) -> str:
 
 
 class CameraReader:
-    def __init__(self, request: StartSessionRequest, timeout_seconds: float = 5.0) -> None:
+    def __init__(self, request: StartSessionRequest, timeout_seconds: float = 5.0, *, recorded_root: Path | None = None) -> None:
+        self.frame_interval = 0.0
+        parts = urlsplit(request.stream_url)
+        if request.source_type == "RECORDED":
+            if recorded_root is None or parts.scheme != "file" or parts.netloc or parts.query or parts.fragment or request.username or request.password:
+                raise ValueError("AI_RECORDED_VIDEO_INVALID")
+            path = Path(url2pathname(parts.path)).resolve()
+            if not path.is_relative_to(recorded_root.resolve()) or path.suffix.lower() != ".mp4" or not path.is_file():
+                raise ValueError("AI_RECORDED_VIDEO_INVALID")
+            self._capture = cv2.VideoCapture(str(path), cv2.CAP_FFMPEG)
+            fps = self._capture.get(cv2.CAP_PROP_FPS)
+            self.frame_interval = 1.0 / (fps if math.isfinite(fps) and 1 <= fps <= 240 else 25)
+            self._closed = False
+            return
+        if parts.scheme not in ("http", "https", "rtsp") or not parts.hostname:
+            raise ValueError("AI_SOURCE_INVALID")
         timeout_ms = max(1, round(timeout_seconds * 1_000))
         self._capture = cv2.VideoCapture(
             _authenticated_url(request),

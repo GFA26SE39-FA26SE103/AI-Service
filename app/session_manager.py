@@ -129,7 +129,7 @@ class SessionManager:
         if not session or session.status.state is SessionState.STOPPED:
             raise SessionNotRunningError("AI_PREVIEW_NOT_RUNNING")
         session.last_access = asyncio.get_running_loop().time()
-        if session.status.state is not SessionState.LIVE or session.latest_jpeg is None:
+        if session.status.state not in (SessionState.LIVE, SessionState.COMPLETED) or session.latest_jpeg is None:
             raise FrameNotReadyError("AI_FRAME_NOT_READY")
         return session.latest_jpeg
 
@@ -169,8 +169,16 @@ class SessionManager:
                         if self._is_idle(session):
                             session.cancel.set()
                             break
+                        frame_started = asyncio.get_running_loop().time()
                         ok, frame = await asyncio.to_thread(reader.read)
                         if not ok or frame is None:
+                            if request.source_type == "RECORDED":
+                                if session.status.frame_sequence:
+                                    self._set_state(session, SessionState.COMPLETED)
+                                else:
+                                    session.status.error_code = "AI_RECORDED_VIDEO_INVALID"
+                                    self._set_state(session, SessionState.ERROR)
+                                return
                             disconnected = True
                             break
                         annotated = await asyncio.to_thread(tracker.annotate, frame)
@@ -179,7 +187,14 @@ class SessionManager:
                         session.status.frame_sequence += 1
                         self._set_state(session, SessionState.LIVE)
                         attempt = 0
-                        await asyncio.sleep(0)
+                        if request.source_type == "RECORDED":
+                            delay = max(0, getattr(reader, "frame_interval", 1 / 25) - (asyncio.get_running_loop().time() - frame_started))
+                            try:
+                                await asyncio.wait_for(session.cancel.wait(), timeout=delay)
+                            except TimeoutError:
+                                pass
+                        else:
+                            await asyncio.sleep(0)
                 finally:
                     self._close_reader(session, reader)
 
@@ -204,8 +219,9 @@ class SessionManager:
                     pass
         except asyncio.CancelledError:
             raise
-        except Exception:
-            session.status.error_code = "AI_PREVIEW_FAILED"
+        except Exception as error:
+            code = str(error)
+            session.status.error_code = code if code in ("AI_RECORDED_VIDEO_INVALID", "AI_SOURCE_INVALID") else "AI_PREVIEW_FAILED"
             self._set_state(session, SessionState.ERROR)
         finally:
             self._close_reader(session, session.reader)

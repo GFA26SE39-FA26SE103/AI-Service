@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import Enum
-from typing import Annotated
+from typing import Annotated, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr
@@ -14,12 +14,14 @@ class SessionState(str, Enum):
     LIVE = "LIVE"
     RECONNECTING = "RECONNECTING"
     ERROR = "ERROR"
+    COMPLETED = "COMPLETED"
 
 
 class StartSessionRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     stream_url: str = Field(min_length=1, repr=False)
+    source_type: Literal["LIVE", "RECORDED"] = "LIVE"
     username: str | None = Field(default=None, repr=False)
     password: SecretStr | None = Field(default=None, repr=False)
     model: str = "yolo26n.pt"
@@ -37,4 +39,3 @@ class SessionStatusResponse(BaseModel):
     updated_at: datetime
     frame_sequence: int = 0
     error_code: str | None = None
-
