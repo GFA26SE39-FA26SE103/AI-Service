@@ -28,6 +28,8 @@ def _authenticated_url(request: StartSessionRequest) -> str:
 class CameraReader:
     def __init__(self, request: StartSessionRequest, timeout_seconds: float = 5.0, *, recorded_root: Path | None = None) -> None:
         self.frame_interval = 0.0
+        self.position_ms: float | None = None
+        self.fps: float | None = None
         parts = urlsplit(request.stream_url)
         if request.source_type == "RECORDED":
             if recorded_root is None or parts.scheme != "file" or parts.netloc or parts.query or parts.fragment or request.username or request.password:
@@ -37,6 +39,7 @@ class CameraReader:
                 raise ValueError("AI_RECORDED_VIDEO_INVALID")
             self._capture = cv2.VideoCapture(str(path), cv2.CAP_FFMPEG)
             fps = self._capture.get(cv2.CAP_PROP_FPS)
+            self.fps = fps if math.isfinite(fps) and 1 <= fps <= 240 else None
             self.frame_interval = 1.0 / (fps if math.isfinite(fps) and 1 <= fps <= 240 else 25)
             self._closed = False
             return
@@ -59,6 +62,9 @@ class CameraReader:
         if self._closed:
             return False, None
         ok, frame = self._capture.read()
+        if ok:
+            position = self._capture.get(cv2.CAP_PROP_POS_MSEC)
+            self.position_ms = position if math.isfinite(position) and position >= 0 else None
         return bool(ok), frame if ok else None
 
     def close(self) -> None:

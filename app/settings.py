@@ -18,7 +18,7 @@ class Settings(BaseSettings):
     port: int = 8090
     recorded_root: Path = Path(__file__).resolve().parents[3] / "Backend" / "Back-End" / "src" / "Supermarket.Api" / ".local" / "videos"
     internal_service_key: SecretStr | None = None
-    model_path: str = "../yolo26n.pt"
+    model_path: str = "../yolo26s.pt"
     tracker: str = "bytetrack.yaml"
     device: str = "cuda:0"
     half: bool = True
@@ -29,3 +29,4 @@ class Settings(BaseSettings):
     frame_timeout_seconds: float = Field(default=5.0, gt=0)
     max_frame_dimension: int = Field(default=1280, ge=320, le=3840)
     session_idle_timeout_seconds: float = Field(default=30.0, gt=0)
+    max_observation_gap_ms: int = Field(default=2000,gt=0)

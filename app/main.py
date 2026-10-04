@@ -2,20 +2,24 @@ from __future__ import annotations
 
 import logging
 import secrets
+from contextlib import asynccontextmanager
 from typing import Any
 from uuid import UUID
 
-from fastapi import Depends, FastAPI, Header, Request
+from fastapi import Depends, FastAPI, Header, Request,Query
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response
 
 from app.camera_reader import CameraReader
 from app.schemas import SessionStatusResponse, StartSessionRequest
+from app.monitoring_schemas import StartMonitoringRequest,MeasurementPage
+from app.monitoring_tracker import MonitoringFrameTracker
 from app.session_manager import (
     FrameNotReadyError,
     SessionCapacityError,
     SessionManager,
     SessionNotRunningError,
+    SessionOwnershipError,
 )
 from app.settings import Settings
 from app.tracker import FrameTracker
@@ -50,8 +54,14 @@ def create_app(settings: Settings | None = None, session_manager: Any | None = N
         reconnect_attempts=resolved_settings.reconnect_attempts,
         reconnect_delay_seconds=resolved_settings.reconnect_delay_seconds,
         session_idle_timeout_seconds=resolved_settings.session_idle_timeout_seconds,
+        max_observation_gap_ms=resolved_settings.max_observation_gap_ms,
+        monitoring_tracker_factory=lambda request: MonitoringFrameTracker(request,resolved_settings.jpeg_quality,resolved_settings.max_frame_dimension),
     )
-    app = FastAPI(title="S.H.E.P.H.E.R.D AI Preview", version="0.1.0")
+    @asynccontextmanager
+    async def lifespan(_app):
+        yield
+        if hasattr(manager,"shutdown"): await manager.shutdown()
+    app = FastAPI(title="S.H.E.P.H.E.R.D AI Monitoring", version="0.2.0",lifespan=lifespan)
 
     async def require_internal_key(
         supplied_key: str | None = Header(default=None, alias="X-AI-Service-Key"),
@@ -65,6 +75,35 @@ def create_app(settings: Settings | None = None, session_manager: Any | None = N
             raise ApiError(401, "AI_SERVICE_UNAUTHORIZED", "AI service authentication failed.")
 
     protected = [Depends(require_internal_key)]
+
+    @app.exception_handler(SessionOwnershipError)
+    async def handle_owner_error(_request,error):
+        code=str(error)
+        if code not in ("AI_SESSION_OWNER_MISMATCH","AI_SESSION_MONITORING_OWNED"): code="AI_SESSION_MONITORING_OWNED"
+        return _error_response(409,code,"This session is owned by backend monitoring; deactivate before changing it.")
+
+    @app.exception_handler(SessionCapacityError)
+    async def handle_capacity(_request,_error):
+        return _error_response(409,"AI_SESSION_CAPACITY","Another camera session is using the GPU.")
+
+    @app.exception_handler(SessionNotRunningError)
+    async def handle_not_running(_request,_error):
+        return _error_response(409,"AI_PREVIEW_NOT_RUNNING","AI session is not running.")
+
+    @app.post("/monitoring/sessions/{camera_id}/start",response_model=SessionStatusResponse,dependencies=protected)
+    async def start_monitoring(camera_id: UUID,body: StartMonitoringRequest):
+        for name,value in (("model",resolved_settings.model_path),("tracker",resolved_settings.tracker),("device",resolved_settings.device),("half",resolved_settings.half)):
+            if name not in body.model_fields_set: setattr(body,name,value)
+        return await manager.start_monitoring(camera_id,body)
+
+    @app.get("/monitoring/sessions/{camera_id}/measurements",response_model=MeasurementPage,dependencies=protected)
+    async def measurements(camera_id: UUID,owner_id: UUID=Header(alias="X-AI-Monitoring-Owner"),after_session_id: UUID|None=None,
+                           after_sequence: int=Query(default=0,ge=0),limit: int=Query(default=64,ge=1,le=64)):
+        return await manager.measurements(camera_id,owner_id,after_session_id,after_sequence,limit)
+
+    @app.delete("/monitoring/sessions/{camera_id}",response_model=SessionStatusResponse,dependencies=protected)
+    async def stop_monitoring(camera_id: UUID,owner_id: UUID=Header(alias="X-AI-Monitoring-Owner")):
+        return await manager.stop_monitoring(camera_id,owner_id)
 
     @app.exception_handler(ApiError)
     async def handle_api_error(_request: Request, error: ApiError) -> JSONResponse:
@@ -137,6 +176,29 @@ def create_app(settings: Settings | None = None, session_manager: Any | None = N
             content=jpeg,
             media_type="image/jpeg",
             headers={"Cache-Control": "no-store"},
+        )
+
+    @app.get("/sessions/{camera_id}/frame/next", dependencies=protected)
+    async def next_session_frame(
+        camera_id: UUID,
+        after_sequence: int = Query(default=0, ge=0),
+        after_session_id: UUID | None = None,
+    ) -> Response:
+        try:
+            frame = await manager.next_frame(camera_id, after_sequence, after_session_id)
+        except SessionNotRunningError as error:
+            raise ApiError(409, "AI_PREVIEW_NOT_RUNNING", "AI preview is not running.") from error
+        if frame is None:
+            return Response(status_code=204, headers={"Cache-Control": "no-store"})
+        jpeg, sequence, session_id = frame
+        return Response(
+            content=jpeg,
+            media_type="image/jpeg",
+            headers={
+                "Cache-Control": "no-store",
+                "X-Frame-Sequence": str(sequence),
+                "X-Session-Id": str(session_id) if session_id is not None else "",
+            },
         )
 
     @app.delete(

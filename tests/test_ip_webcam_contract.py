@@ -23,7 +23,7 @@ async def test_real_ip_webcam_reaches_live_and_returns_jpeg():
         stream_url=stream_url,
         username=os.getenv("AI_TEST_STREAM_USERNAME"),
         password=os.getenv("AI_TEST_STREAM_PASSWORD"),
-        model=os.getenv("AI_TEST_MODEL", str(Path(__file__).parents[2] / "yolo26n.pt")),
+        model=os.getenv("AI_TEST_MODEL", str(Path(__file__).parents[2] / "yolo26s.pt")),
     )
     manager = SessionManager(
         CameraReader,
@@ -45,4 +45,3 @@ async def test_real_ip_webcam_reaches_live_and_returns_jpeg():
         assert len(jpeg) > 1_000
     finally:
         await manager.stop(camera_id)
-

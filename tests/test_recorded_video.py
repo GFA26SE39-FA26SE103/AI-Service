@@ -60,6 +60,35 @@ async def test_recorded_video_finishes_without_reconnect_and_keeps_last_frame(tm
     await manager.stop(camera_id)
 
 
+@pytest.mark.asyncio
+async def test_next_frame_waits_for_new_sequence_and_returns_no_duplicate_at_eof(tmp_path):
+    path = tmp_path / "sample.mp4"
+    make_video(path)
+    manager = SessionManager(lambda request: CameraReader(request, recorded_root=tmp_path), lambda _: FakeTracker())
+    camera_id = uuid4()
+    await manager.start(camera_id, StartSessionRequest(stream_url=path.as_uri(), source_type="RECORDED"))
+
+    first = await manager.next_frame(camera_id, after_sequence=0, after_session_id=None)
+    assert first is not None
+    first_jpeg, first_sequence, session_id = first
+    assert first_jpeg and first_sequence >= 1
+
+    next_frame = await manager.next_frame(camera_id, after_sequence=first_sequence, after_session_id=session_id)
+    assert next_frame is not None
+    assert next_frame[1] > first_sequence
+    assert next_frame[2] == session_id
+
+    async with asyncio.timeout(3):
+        while manager.status_now(camera_id).state is not SessionState.COMPLETED:
+            await asyncio.sleep(.01)
+    last_sequence = manager.status_now(camera_id).frame_sequence
+    assert await manager.next_frame(camera_id, after_sequence=last_sequence, after_session_id=session_id) is None
+    assert (await manager.next_frame(camera_id, after_sequence=last_sequence, after_session_id=uuid4()))[1] == last_sequence
+    manager._sessions[camera_id].status.state = SessionState.ERROR
+    assert await manager.next_frame(camera_id, after_sequence=0, after_session_id=None) is None
+    await manager.stop(camera_id)
+
+
 def test_recorded_reader_rejects_path_outside_storage(tmp_path):
     outside = tmp_path.parent / "outside.mp4"
     with pytest.raises(ValueError, match="AI_RECORDED_VIDEO_INVALID"):

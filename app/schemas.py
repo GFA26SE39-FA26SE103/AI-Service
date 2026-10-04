@@ -24,7 +24,7 @@ class StartSessionRequest(BaseModel):
     source_type: Literal["LIVE", "RECORDED"] = "LIVE"
     username: str | None = Field(default=None, repr=False)
     password: SecretStr | None = Field(default=None, repr=False)
-    model: str = "yolo26n.pt"
+    model: str = "../yolo26s.pt"
     tracker: str = "bytetrack.yaml"
     classes: list[int] = Field(default_factory=lambda: [0])
     confidence: Annotated[float, Field(ge=0, le=1)] = 0.50
@@ -39,3 +39,7 @@ class SessionStatusResponse(BaseModel):
     updated_at: datetime
     frame_sequence: int = 0
     error_code: str | None = None
+    session_id: UUID | None = None
+    purpose: Literal["PREVIEW","MONITORING"] = "PREVIEW"
+    configuration_fingerprint: str | None = None
+    annotation_context: str | None = None

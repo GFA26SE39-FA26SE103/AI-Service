@@ -7,7 +7,7 @@ The React frontend must never call this service or the phone camera directly. Th
 ## Local runtime
 
 - Python: `C:\FPT University\CAPSTONE\setup\.venv\Scripts\python.exe`
-- Model: `C:\FPT University\CAPSTONE\setup\yolo26n.pt`
+- Model: `C:\FPT University\CAPSTONE\setup\yolo26s.pt` (YOLO26s official checkpoint; keep the weight outside Git)
 - FFmpeg: portable build under `C:\FPT University\CAPSTONE\setup\tools\ffmpeg`
 - Default API: `http://127.0.0.1:8090`
 
@@ -22,6 +22,7 @@ $uv = 'C:\FPT University\CAPSTONE\setup\tools\uv\uv.exe'
 ```
 
 Copy `.env.example` to `.env` for local overrides. Do not commit camera URLs, usernames, passwords, JWTs, or the internal service key.
+If the checkpoint is absent on another machine, download `yolo26s.pt` from the official Ultralytics release into `CAPSTONE/setup` before starting a preview; changing the model name alone does not provide the weight file. Both AI's `AI_MODEL_PATH` and backend's `AiPreview:Model` must point to the same checkpoint, and both services need a restart.
 
 Start the private service from this directory:
 
@@ -35,11 +36,12 @@ Internal contract:
 - `POST /sessions/{cameraId}/start`
 - `GET /sessions/{cameraId}/status`
 - `GET /sessions/{cameraId}/frame`
+- `GET /sessions/{cameraId}/frame/next?after_sequence=N&after_session_id=<uuid>`: waits up to 1 second for a newer annotated JPEG; `200` includes `X-Frame-Sequence` and `X-Session-Id`, `204` means no new frame. A changed session ID sends the current frame even if its sequence reset.
 - `DELETE /sessions/{cameraId}`
 
 Session states are `STOPPED`, `STARTING`, `LIVE`, `RECONNECTING`, `COMPLETED`, and `ERROR`. Frame reads use `409 AI_PREVIEW_NOT_RUNNING` or `503 AI_FRAME_NOT_READY` when appropriate. Unexpected errors return only `AI_PREVIEW_FAILED`; camera credentials and authenticated stream URLs are never echoed.
 
-The native preview intentionally runs one GPU session at a time. Input frames are downscaled to a maximum dimension of `AI_MAX_FRAME_DIMENSION` (1280 by default), OpenCV open/read calls use `AI_FRAME_TIMEOUT_SECONDS`, and a session self-stops after `AI_SESSION_IDLE_TIMEOUT_SECONDS` without status/frame polling. These limits protect the laptop if the browser closes or authentication expires.
+The native service runs one active GPU session at a time. Frames downscale to `AI_MAX_FRAME_DIMENSION` (default1280), OpenCV timeouts use `AI_FRAME_TIMEOUT_SECONDS`. Preview-only lease renews on viewer access. Monitoring lease renews **only** on owner measurement reads (default30s); viewer access cannot keep an abandoned monitoring owner alive.
 
 ## IP Webcam prerequisite
 
@@ -63,7 +65,7 @@ $env:AI_TEST_STREAM_PASSWORD = ''
 & '..\.venv\Scripts\python.exe' -m pytest tests/test_ip_webcam_contract.py -q
 ```
 
-If the phone is disconnected, status transitions through `RECONNECTING` and then `ERROR`; this smoke-test feature does not create an Operational Incident. Polling returns the newest annotated JPEG (roughly 3–10 FPS depending on GPU/network), not browser-native video. Stop the preview before editing camera connection details so the restarted session uses only the current credentials.
+If the phone is disconnected, status transitions through `RECONNECTING` and then `ERROR`; connection health errors do not create an Operational Incident. The React viewer requests only newer annotated JPEGs; its frame rate depends on source FPS, YOLO/ByteTrack time, JPEG/network transfer and browser decoding, not a fixed 250 ms UI delay. It is not browser-native video. For preview-only sessions, stop the preview before editing camera connection details. For owned monitoring, deactivate the active zone configurations first; public viewer Stop only detaches the view.
 
 ## Recorded video fallback (2026-10-02)
 
@@ -71,12 +73,26 @@ No IP Webcam server is required for this mode. In React **Cameras**, create an *
 
 Default recorded storage is resolved from this checkout: `CAPSTONE/Backend/Back-End/src/Supermarket.Api/.local/videos`. Set `AI_RECORDED_ROOT` to the same absolute directory as backend `Video:RecordedRoot` when moving directories, publishing or using custom storage. Keep both services on the same machine for this native workflow. Reader rejects files outside that root, non-local file URIs and non-MP4 paths. Do not put secrets or uploaded videos in Git.
 
-Recorded files are processed sequentially, paced by source FPS (not faster than source playback; slow inference may take longer). Every frame reaches the tracker, but React only displays the newest JPEG. EOF changes state to `COMPLETED`, releases the worker and retains the final frame; it does not reconnect/loop or report a camera outage. Stop/start replays from frame one with fresh camera-local IDs. Invalid input returns `ERROR` without exposing file paths. A live request omitting `source_type` remains backwards compatible.
+Recorded files are processed sequentially, paced by source FPS (not faster than source playback; slow inference may take longer). Every frame reaches the tracker, but React only displays the newest JPEG. EOF changes state to `COMPLETED`, releases the worker and retains the final frame; it does not reconnect/loop or report a camera outage. Preview-only stop/start replays from frame one with fresh camera-local IDs. Owned monitoring requires the backend owner to stop before a fresh start; public viewer start/stop never replays it. Invalid input returns `ERROR` without exposing file paths. A live request omitting `source_type` remains backwards compatible.
 
-This is detection/tracking preview only, not configured continuous monitoring. No ROI measurements, per-zone incident threshold evaluation, sustain/cooldown or OperationalEvents are written. Backend health probes still test file readability independently of playback completion. Review zone ROIs when changing scenes.
+Preview-only still does detection/tracking. The monitoring protocol below adds ROI aggregates; threshold/sustain/cooldown and SQL persistence remain entirely BE-owned. Health probes test file readability independently of playback completion. Review ROIs when changing sources/scenes.
+
+## BE-owned monitoring protocol v1 (03/10/2026)
+
+- `POST /monitoring/sessions/{camera_id}/start`: authenticated internal request with owner UUID, configuration fingerprint and zone contexts (config ID/versionUTC, normalized ROI, confidence, queue_enabled). Credentials only in this private start body; never in status/measurements/errors.
+- `GET .../measurements`: `X-AI-Monitoring-Owner`, `after_session_id`, `after_sequence`, `limit`1–64. Ordered batches have session/continuity IDs, source elapsed ms, capturedUTC, fingerprint and aggregate people/queue counts only. Bounded256 buffer reports `gap` on overrun/session mismatch. Do not poll only latest counts for sustained conditions.
+- `DELETE /monitoring/sessions/{camera_id}`: owner-only stop. Existing `X-AI-Service-Key` applies. No FE direct access.
+
+YOLO predicts once/frame, then confidence filters detections **before** distinct ByteTrack contexts (shared for equal-confidence zones). Count current confirmed person tracks whose bottom-center footpoint is inside/on ROI; not lost/predicted tracks. Queue membership requires ≥5000ms continuously observed in ROI; exits/misses/continuity changes reset dwell. Track IDs remain transient camera/context-local, never persisted as identity.
+
+Recorded source uses PTS or validated FPS/frame-index fallback, never inference wall time for sustain. Live uses monotonic time with gap guard (`AI_MAX_OBSERVATION_GAP_MS` default2000). Reconnect/gap/reconfigure reset tracking/dwell. Same-source zone reconfigure happens between frames without reader reopen or recorded rewind, retaining sequence. EOF drains once and remains COMPLETED; new configuration at EOF invalidates old metrics but does not replay. Public preview start attaches; public stop409 cannot stop an owned monitor. BE viewer proxy handles this as detach/no-op. Replay requires owner stop then new start.
+
+Remaining: physical density/calibration, waiting/checkout measurement, SQL/incident routing and tasks are not AI-service responsibilities. Dependency warnings (Starlette/httpx and installed Ultralytics `half` deprecation) remain; no dependency upgrade performed.
 
 Tests (including a generated three-frame MP4 through real OpenCV reader, pacing/EOF/path guards):
 
 ```powershell
 & '..\.venv\Scripts\python.exe' -m pytest -q
 ```
+
+Verification 03/10/2026: 52 tests passed, 1 IP Webcam test skipped without `AI_TEST_STREAM_URL`. On this Windows sandbox, pytest was run with `-p no:cacheprovider` and a unique writable `--basetemp` to avoid unrelated temp/cache ACL errors. A separate native RTX4060 smoke used existing YOLO26n/ByteTrack and the first 8s of an uploaded video (read-only): 240 frames, two confidence contexts, final JPEG/COMPLETED/no replay. Positive queue dwell was covered by unit tests, not observed in that bounded sample. SQL/runtime/browser integration is verified separately, not as one native end-to-end session.

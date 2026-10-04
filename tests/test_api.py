@@ -43,6 +43,13 @@ class FakeSessionManager:
             raise self.frame_error
         return b"\xff\xd8tracked-jpeg\xff\xd9"
 
+    async def next_frame(self, camera_id, after_sequence, after_session_id):
+        if self.frame_error:
+            raise self.frame_error
+        if after_sequence >= 1 and after_session_id == self._status(camera_id).session_id:
+            return None
+        return b"\xff\xd8tracked-jpeg\xff\xd9", 1, self._status(camera_id).session_id
+
     async def stop(self, camera_id):
         self.state = SessionState.STOPPED
         return self._status(camera_id)
@@ -85,6 +92,17 @@ def test_start_status_frame_stop_contract():
     assert frame.headers["cache-control"] == "no-store"
     assert frame.content.startswith(b"\xff\xd8")
     assert stop.json()["state"] == "STOPPED"
+
+
+def test_next_frame_exposes_sequence_and_returns_no_content_for_duplicate():
+    camera_id = uuid4()
+    test_client = client()
+    first = test_client.get(f"/sessions/{camera_id}/frame/next?after_sequence=0")
+    assert first.status_code == 200
+    assert first.headers["x-frame-sequence"] == "1"
+    assert first.headers["cache-control"] == "no-store"
+    duplicate = test_client.get(f"/sessions/{camera_id}/frame/next?after_sequence=1")
+    assert duplicate.status_code == 204
 
 
 def test_frame_returns_409_when_stopped_and_503_when_not_ready():
