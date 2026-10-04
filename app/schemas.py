@@ -39,3 +39,14 @@ class SessionStatusResponse(BaseModel):
     updated_at: datetime
     frame_sequence: int = 0
     error_code: str | None = None
+
+
+class FrameHealthResponse(BaseModel):
+    issues: list[
+        Literal[
+            "CAMERA_VIEW_BLOCKED",
+            "CAMERA_VIEW_BLURRED",
+            "CAMERA_VIEW_FROZEN",
+            "CAMERA_FRAME_INVALID",
+        ]
+    ] = Field(default_factory=list)

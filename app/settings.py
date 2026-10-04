@@ -29,3 +29,8 @@ class Settings(BaseSettings):
     frame_timeout_seconds: float = Field(default=5.0, gt=0)
     max_frame_dimension: int = Field(default=1280, ge=320, le=3840)
     session_idle_timeout_seconds: float = Field(default=30.0, gt=0)
+    health_frame_max_bytes: int = Field(default=4 * 1024 * 1024, ge=1024, le=8 * 1024 * 1024)
+    health_frame_max_dimension: int = Field(default=640, ge=128, le=1920)
+    health_blur_variance_threshold: float = Field(default=80.0, gt=0)
+    health_blocked_stddev_threshold: float = Field(default=4.0, ge=0)
+    health_blocked_edge_ratio_threshold: float = Field(default=0.001, ge=0, le=1)

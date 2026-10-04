@@ -32,12 +32,15 @@ Start the private service from this directory:
 Internal contract:
 
 - `GET /health`
+- `POST /frame-health` (private CPU-only JPEG usability analysis)
 - `POST /sessions/{cameraId}/start`
 - `GET /sessions/{cameraId}/status`
 - `GET /sessions/{cameraId}/frame`
 - `DELETE /sessions/{cameraId}`
 
 Session states are `STOPPED`, `STARTING`, `LIVE`, `RECONNECTING`, `COMPLETED`, and `ERROR`. Frame reads use `409 AI_PREVIEW_NOT_RUNNING` or `503 AI_FRAME_NOT_READY` when appropriate. Unexpected errors return only `AI_PREVIEW_FAILED`; camera credentials and authenticated stream URLs are never echoed.
+
+`POST /frame-health` is called only by the backend health worker. It accepts one bounded encoded frame and returns whole-camera visual issue codes (`CAMERA_VIEW_BLOCKED`, `CAMERA_VIEW_BLURRED`, or `CAMERA_FRAME_INVALID`). It downsizes before deterministic OpenCV checks and does not load YOLO or use the GPU. Darkness is intentionally not classified. `CAMERA_VIEW_FROZEN` remains a supported health-event contract but this endpoint does not guess frozen state from an empty/static supermarket scene; a future source adapter must supply reliable freshness/sequence metadata.
 
 The native preview intentionally runs one GPU session at a time. Input frames are downscaled to a maximum dimension of `AI_MAX_FRAME_DIMENSION` (1280 by default), OpenCV open/read calls use `AI_FRAME_TIMEOUT_SECONDS`, and a session self-stops after `AI_SESSION_IDLE_TIMEOUT_SECONDS` without status/frame polling. These limits protect the laptop if the browser closes or authentication expires.
 
