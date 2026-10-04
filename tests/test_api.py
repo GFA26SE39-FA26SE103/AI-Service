@@ -3,6 +3,8 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from uuid import UUID, uuid4
 
+import cv2
+import numpy as np
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
 
@@ -73,6 +75,35 @@ def test_health_returns_ready():
 
     assert response.status_code == 200
     assert response.json() == {"status": "ready"}
+
+
+def test_frame_health_endpoint_returns_cpu_only_visual_result():
+    cells = np.indices((256, 256)).sum(axis=0) // 16
+    frame = cv2.cvtColor(((cells % 2) * 255).astype(np.uint8), cv2.COLOR_GRAY2BGR)
+    ok, encoded = cv2.imencode(".jpg", frame)
+    assert ok
+
+    response = client().post(
+        "/frame-health",
+        content=encoded.tobytes(),
+        headers={"Content-Type": "image/jpeg"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"issues": []}
+
+
+def test_frame_health_endpoint_rejects_oversized_body_before_decode():
+    settings = Settings(health_frame_max_bytes=1024)
+
+    response = client(settings=settings).post(
+        "/frame-health",
+        content=b"x" * 1025,
+        headers={"Content-Type": "image/jpeg"},
+    )
+
+    assert response.status_code == 413
+    assert response.json()["code"] == "AI_FRAME_TOO_LARGE"
 
 
 def test_start_status_frame_stop_contract():

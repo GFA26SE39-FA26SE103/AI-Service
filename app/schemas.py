@@ -43,3 +43,14 @@ class SessionStatusResponse(BaseModel):
     purpose: Literal["PREVIEW","MONITORING"] = "PREVIEW"
     configuration_fingerprint: str | None = None
     annotation_context: str | None = None
+
+
+class FrameHealthResponse(BaseModel):
+    issues: list[
+        Literal[
+            "CAMERA_VIEW_BLOCKED",
+            "CAMERA_VIEW_BLURRED",
+            "CAMERA_VIEW_FROZEN",
+            "CAMERA_FRAME_INVALID",
+        ]
+    ] = Field(default_factory=list)

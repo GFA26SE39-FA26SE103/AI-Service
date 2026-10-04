@@ -1,19 +1,21 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import secrets
 from contextlib import asynccontextmanager
 from typing import Any
 from uuid import UUID
 
-from fastapi import Depends, FastAPI, Header, Request,Query
+from fastapi import Depends, FastAPI, Header, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response
 
 from app.camera_reader import CameraReader
-from app.schemas import SessionStatusResponse, StartSessionRequest
-from app.monitoring_schemas import StartMonitoringRequest,MeasurementPage
+from app.frame_health import FrameHealthAnalyzer
+from app.monitoring_schemas import MeasurementPage, StartMonitoringRequest
 from app.monitoring_tracker import MonitoringFrameTracker
+from app.schemas import FrameHealthResponse, SessionStatusResponse, StartSessionRequest
 from app.session_manager import (
     FrameNotReadyError,
     SessionCapacityError,
@@ -22,9 +24,15 @@ from app.session_manager import (
     SessionOwnershipError,
 )
 from app.settings import Settings
-from app.tracker import FrameTracker
 
 logger = logging.getLogger("ai_preview")
+
+
+def _frame_tracker(request: StartSessionRequest, settings: Settings):
+    # Keep CPU-only health checks available without importing the YOLO runtime.
+    from app.tracker import FrameTracker
+
+    return FrameTracker(request, settings.jpeg_quality, settings.max_frame_dimension)
 
 
 class ApiError(RuntimeError):
@@ -46,11 +54,7 @@ def create_app(settings: Settings | None = None, session_manager: Any | None = N
     resolved_settings = settings or Settings()
     manager = session_manager or SessionManager(
         lambda request: CameraReader(request, resolved_settings.frame_timeout_seconds, recorded_root=resolved_settings.recorded_root),
-        lambda request: FrameTracker(
-            request,
-            resolved_settings.jpeg_quality,
-            resolved_settings.max_frame_dimension,
-        ),
+        lambda request: _frame_tracker(request, resolved_settings),
         reconnect_attempts=resolved_settings.reconnect_attempts,
         reconnect_delay_seconds=resolved_settings.reconnect_delay_seconds,
         session_idle_timeout_seconds=resolved_settings.session_idle_timeout_seconds,
@@ -75,6 +79,12 @@ def create_app(settings: Settings | None = None, session_manager: Any | None = N
             raise ApiError(401, "AI_SERVICE_UNAUTHORIZED", "AI service authentication failed.")
 
     protected = [Depends(require_internal_key)]
+    frame_health = FrameHealthAnalyzer(
+        blur_variance_threshold=resolved_settings.health_blur_variance_threshold,
+        blocked_stddev_threshold=resolved_settings.health_blocked_stddev_threshold,
+        blocked_edge_ratio_threshold=resolved_settings.health_blocked_edge_ratio_threshold,
+        max_dimension=resolved_settings.health_frame_max_dimension,
+    )
 
     @app.exception_handler(SessionOwnershipError)
     async def handle_owner_error(_request,error):
@@ -126,6 +136,20 @@ def create_app(settings: Settings | None = None, session_manager: Any | None = N
     @app.get("/health")
     async def health() -> dict[str, str]:
         return {"status": "ready"}
+
+    @app.post(
+        "/frame-health",
+        response_model=FrameHealthResponse,
+        dependencies=protected,
+    )
+    async def analyze_frame_health(request: Request) -> FrameHealthResponse:
+        encoded = bytearray()
+        async for chunk in request.stream():
+            if len(encoded) + len(chunk) > resolved_settings.health_frame_max_bytes:
+                raise ApiError(413, "AI_FRAME_TOO_LARGE", "Camera frame exceeded the health-check size limit.")
+            encoded.extend(chunk)
+        result = await asyncio.to_thread(frame_health.analyze_encoded, bytes(encoded))
+        return FrameHealthResponse(issues=result.issues)
 
     @app.post(
         "/sessions/{camera_id}/start",
