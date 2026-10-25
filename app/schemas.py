@@ -43,6 +43,7 @@ class SessionStatusResponse(BaseModel):
     purpose: Literal["PREVIEW","MONITORING"] = "PREVIEW"
     configuration_fingerprint: str | None = None
     annotation_context: str | None = None
+    viewer_lease_id: UUID | None = None
 
 
 class FrameHealthResponse(BaseModel):

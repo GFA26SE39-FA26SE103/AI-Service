@@ -34,20 +34,20 @@ async def test_recorded_video_finishes_without_reconnect_and_keeps_last_frame(tm
     manager = SessionManager(reader_factory, lambda _: FakeTracker())
     camera_id = uuid4()
     started = asyncio.get_running_loop().time()
-    await manager.start(camera_id, StartSessionRequest(stream_url=path.as_uri(), source_type="RECORDED"))
+    first_viewer = await manager.start(camera_id, StartSessionRequest(stream_url=path.as_uri(), source_type="RECORDED"))
     async with asyncio.timeout(3):
         while manager.status_now(camera_id).state.value not in ("COMPLETED", "ERROR"):
             await asyncio.sleep(.01)
 
-    status = await manager.status(camera_id)
+    status = await manager.status(camera_id, first_viewer.viewer_lease_id)
     assert status.state.value == "COMPLETED"
     assert status.frame_sequence == 3
     assert status.error_code is None
     assert len(readers) == 1
     assert asyncio.get_running_loop().time() - started >= .25
     assert manager.active_worker_count == 0
-    assert await manager.frame(camera_id)
-    await manager.stop(camera_id)
+    assert await manager.frame(camera_id, first_viewer.viewer_lease_id)
+    await manager.force_stop(camera_id)
     assert manager.status_now(camera_id).state is SessionState.STOPPED
 
     # Replay starts from frame one with a new reader, not a reconnect at the EOF position.
@@ -57,7 +57,7 @@ async def test_recorded_video_finishes_without_reconnect_and_keeps_last_frame(tm
             await asyncio.sleep(.01)
     assert manager.status_now(camera_id).frame_sequence == 3
     assert len(readers) == 2
-    await manager.stop(camera_id)
+    await manager.force_stop(camera_id)
 
 
 @pytest.mark.asyncio
@@ -66,14 +66,14 @@ async def test_next_frame_waits_for_new_sequence_and_returns_no_duplicate_at_eof
     make_video(path)
     manager = SessionManager(lambda request: CameraReader(request, recorded_root=tmp_path), lambda _: FakeTracker())
     camera_id = uuid4()
-    await manager.start(camera_id, StartSessionRequest(stream_url=path.as_uri(), source_type="RECORDED"))
+    viewer = await manager.start(camera_id, StartSessionRequest(stream_url=path.as_uri(), source_type="RECORDED"))
 
-    first = await manager.next_frame(camera_id, after_sequence=0, after_session_id=None)
+    first = await manager.next_frame(camera_id, viewer.viewer_lease_id, after_sequence=0, after_session_id=None)
     assert first is not None
     first_jpeg, first_sequence, session_id = first
     assert first_jpeg and first_sequence >= 1
 
-    next_frame = await manager.next_frame(camera_id, after_sequence=first_sequence, after_session_id=session_id)
+    next_frame = await manager.next_frame(camera_id, viewer.viewer_lease_id, after_sequence=first_sequence, after_session_id=session_id)
     assert next_frame is not None
     assert next_frame[1] > first_sequence
     assert next_frame[2] == session_id
@@ -82,11 +82,11 @@ async def test_next_frame_waits_for_new_sequence_and_returns_no_duplicate_at_eof
         while manager.status_now(camera_id).state is not SessionState.COMPLETED:
             await asyncio.sleep(.01)
     last_sequence = manager.status_now(camera_id).frame_sequence
-    assert await manager.next_frame(camera_id, after_sequence=last_sequence, after_session_id=session_id) is None
-    assert (await manager.next_frame(camera_id, after_sequence=last_sequence, after_session_id=uuid4()))[1] == last_sequence
+    assert await manager.next_frame(camera_id, viewer.viewer_lease_id, after_sequence=last_sequence, after_session_id=session_id) is None
+    assert (await manager.next_frame(camera_id, viewer.viewer_lease_id, after_sequence=last_sequence, after_session_id=uuid4()))[1] == last_sequence
     manager._sessions[camera_id].status.state = SessionState.ERROR
-    assert await manager.next_frame(camera_id, after_sequence=0, after_session_id=None) is None
-    await manager.stop(camera_id)
+    assert await manager.next_frame(camera_id, viewer.viewer_lease_id, after_sequence=0, after_session_id=None) is None
+    await manager.force_stop(camera_id)
 
 
 def test_recorded_reader_rejects_path_outside_storage(tmp_path):
@@ -127,4 +127,4 @@ async def test_invalid_recorded_file_errors_without_reconnect(tmp_path):
     assert manager.status_now(camera_id).frame_sequence == 0
     assert len(readers) == 1
     assert manager.active_worker_count == 0
-    await manager.stop(camera_id)
+    await manager.force_stop(camera_id)

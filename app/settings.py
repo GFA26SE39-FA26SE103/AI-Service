@@ -29,6 +29,7 @@ class Settings(BaseSettings):
     frame_timeout_seconds: float = Field(default=5.0, gt=0)
     max_frame_dimension: int = Field(default=1280, ge=320, le=3840)
     session_idle_timeout_seconds: float = Field(default=30.0, gt=0)
+    max_active_camera_sessions: int = Field(default=2, ge=1, le=2)
     max_observation_gap_ms: int = Field(default=2000,gt=0)
     health_frame_max_bytes: int = Field(default=4 * 1024 * 1024, ge=1024, le=8 * 1024 * 1024)
     health_frame_max_dimension: int = Field(default=640, ge=128, le=1920)

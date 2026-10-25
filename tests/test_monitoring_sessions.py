@@ -3,7 +3,7 @@ from uuid import uuid4
 import pytest
 from app.monitoring_schemas import StartMonitoringRequest,ZoneMeasurement
 from app.monitoring_tracker import MonitoringFrameResult
-from app.session_manager import SessionManager,SessionOwnershipError
+from app.session_manager import SessionCapacityError,SessionManager,SessionOwnershipError
 from app.schemas import StartSessionRequest,SessionState
 from tests.fakes import RecordingFactories,FakeTracker,frame
 from tests.test_monitoring_contract import zone
@@ -23,7 +23,7 @@ async def wait_for_frames(manager,camera,count=1):
         while manager.status_now(camera).frame_sequence<count: await asyncio.sleep(.01)
 
 @pytest.mark.asyncio
-async def test_monitoring_preview_attaches_and_viewer_cannot_stop_owner():
+async def test_monitoring_preview_attaches_and_viewer_release_cannot_stop_owner():
     factories=RecordingFactories.with_sequences([(True,frame(1))]); made=[]
     def create(body): made.append(MonitoringFake(body)); return made[-1]
     manager=SessionManager(factories.reader_factory,factories.tracker_factory,monitoring_tracker_factory=create)
@@ -31,12 +31,13 @@ async def test_monitoring_preview_attaches_and_viewer_cannot_stop_owner():
     await manager.start_monitoring(camera,body); await wait_for_frames(manager,camera)
     before=manager.status_now(camera).session_id
     attached=await manager.start(camera,StartSessionRequest(stream_url="http://camera.test/video"))
-    assert attached.purpose=="MONITORING" and attached.session_id==before and len(made)==1
-    with pytest.raises(SessionOwnershipError,match="AI_SESSION_MONITORING_OWNED"): await manager.stop(camera)
+    assert attached.purpose=="MONITORING" and attached.session_id==before and attached.viewer_lease_id is not None and len(made)==1
+    released=await manager.release_viewer(camera,attached.viewer_lease_id)
+    assert released.purpose=="MONITORING" and manager.active_worker_count==1
     with pytest.raises(SessionOwnershipError,match="AI_SESSION_OWNER_MISMATCH"): await manager.measurements(camera,uuid4(),None,0,64)
     page=await manager.measurements(camera,body.owner_id,None,0,64)
     assert page.batches[0].zones[0].people_count==1
-    assert str(body.owner_id) not in (await manager.status(camera)).model_dump_json()
+    assert str(body.owner_id) not in manager.status_now(camera).model_dump_json()
     await manager.stop_monitoring(camera,body.owner_id)
     assert manager.status_now(camera).state==SessionState.STOPPED
 
@@ -67,9 +68,12 @@ async def test_viewer_polling_does_not_renew_monitoring_owner_lease():
     factories=RecordingFactories.with_sequences([(True,frame(1))])
     manager=SessionManager(factories.reader_factory,factories.tracker_factory,monitoring_tracker_factory=MonitoringFake,session_idle_timeout_seconds=.08)
     camera=uuid4(); body=request(); await manager.start_monitoring(camera,body)
+    viewer=await manager.start(camera,StartSessionRequest(stream_url=body.stream_url))
     async with asyncio.timeout(3):
         while manager.status_now(camera).state!=SessionState.STOPPED:
-            await manager.status(camera); await asyncio.sleep(.01)
+            try: await manager.status(camera,viewer.viewer_lease_id)
+            except RuntimeError: pass
+            await asyncio.sleep(.01)
     assert manager.active_worker_count==0
 
 @pytest.mark.asyncio
@@ -111,3 +115,66 @@ async def test_reconnect_keeps_order_but_resets_tracking_continuity():
         assert made[0].resets>=1 and len(factories.readers)==2
     finally:
         await manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_preview_and_monitoring_workers_share_same_two_camera_capacity():
+    factories=RecordingFactories.with_sequences([(True,frame(51))],[(True,frame(52))],[(True,frame(53))])
+    manager=SessionManager(
+        factories.reader_factory,
+        factories.tracker_factory,
+        monitoring_tracker_factory=MonitoringFake,
+        max_active_camera_sessions=2,
+    )
+    preview_camera,monitoring_camera,third_camera=uuid4(),uuid4(),uuid4()
+    try:
+        await manager.start(preview_camera,StartSessionRequest(stream_url="http://camera.test/preview"))
+        await manager.start_monitoring(monitoring_camera,request(stream_url="http://camera.test/monitoring"))
+        async with asyncio.timeout(3):
+            while manager.active_worker_count<2: await asyncio.sleep(.01)
+
+        with pytest.raises(SessionCapacityError,match="AI_SESSION_CAPACITY"):
+            await manager.start(third_camera,StartSessionRequest(stream_url="http://camera.test/third"))
+
+        assert manager.active_worker_count==2
+    finally:
+        await manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_viewer_release_never_stops_monitoring_owner():
+    factories=RecordingFactories.with_sequences([(True,frame(54))])
+    manager=SessionManager(factories.reader_factory,factories.tracker_factory,monitoring_tracker_factory=MonitoringFake)
+    camera=uuid4(); body=request()
+    try:
+        await manager.start_monitoring(camera,body); await wait_for_frames(manager,camera)
+        first=await manager.start(camera,StartSessionRequest(stream_url=body.stream_url))
+        second=await manager.start(camera,StartSessionRequest(stream_url=body.stream_url))
+
+        await manager.release_viewer(camera,first.viewer_lease_id)
+        await manager.release_viewer(camera,second.viewer_lease_id)
+
+        assert manager.status_now(camera).purpose=="MONITORING"
+        assert manager.status_now(camera).state==SessionState.LIVE
+        assert manager.active_worker_count==1
+    finally:
+        await manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_monitoring_replacement_invalidates_preview_generation_leases():
+    factories=RecordingFactories.with_sequences([(True,frame(55))],[(True,frame(56))])
+    manager=SessionManager(factories.reader_factory,factories.tracker_factory,monitoring_tracker_factory=MonitoringFake)
+    camera=uuid4(); body=request()
+    preview=await manager.start(camera,StartSessionRequest(stream_url=body.stream_url))
+    await wait_for_frames(manager,camera)
+
+    monitoring=await manager.start_monitoring(camera,body)
+    attached=await manager.start(camera,StartSessionRequest(stream_url=body.stream_url))
+
+    with pytest.raises(RuntimeError,match="AI_VIEWER_LEASE_EXPIRED"):
+        await manager.status(camera,preview.viewer_lease_id)
+    assert attached.viewer_lease_id is not None
+    assert attached.session_id==monitoring.session_id
+    assert attached.session_id!=preview.session_id
+    await manager.shutdown()
