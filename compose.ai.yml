@@ -1,0 +1,35 @@
+services:
+  ai-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+
+    image: fa26se103-ai:local
+    container_name: fa26se103-ai
+
+    restart: unless-stopped
+
+    gpus: all
+    shm_size: "1gb"
+
+    env_file:
+      - .env.docker
+
+    environment:
+      AI_MAX_ACTIVE_CAMERA_SESSIONS: ${AI_MAX_ACTIVE_CAMERA_SESSIONS:-2}
+
+    ports:
+      - "127.0.0.1:8090:8090"
+
+    volumes:
+      - type: bind
+        source: ../yolo26s.pt
+        target: /models/yolo26s.pt
+        read_only: true
+
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8090/health', timeout=3).read()"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s

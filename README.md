@@ -35,16 +35,20 @@ Internal contract:
 - `GET /health`
 - `POST /frame-health` (private CPU-only JPEG usability analysis)
 - `POST /sessions/{cameraId}/start`
-- `GET /sessions/{cameraId}/status`
-- `GET /sessions/{cameraId}/frame`
-- `GET /sessions/{cameraId}/frame/next?after_sequence=N&after_session_id=<uuid>`: waits up to 1 second for a newer annotated JPEG; `200` includes `X-Frame-Sequence` and `X-Session-Id`, `204` means no new frame. A changed session ID sends the current frame even if its sequence reset.
-- `DELETE /sessions/{cameraId}`
+- `POST /sessions/{cameraId}/viewers/attach`: attach a viewer only to an existing worker (used by the backend when monitoring owns the worker).
+- `GET /sessions/{cameraId}/status` with `X-AI-Viewer-Lease`
+- `GET /sessions/{cameraId}/frame` with `X-AI-Viewer-Lease` (deprecated; use `frame/next`).
+- `GET /sessions/{cameraId}/frame/next?after_sequence=N&after_session_id=<uuid>` with `X-AI-Viewer-Lease`: waits up to 1 second for a newer annotated JPEG; `200` includes `X-Frame-Sequence` and `X-Session-Id`, `204` means no new frame. A changed session ID sends the current frame even if its sequence reset.
+- `DELETE /sessions/{cameraId}/viewer` with `X-AI-Viewer-Lease`: idempotently releases only that viewer.
+- `DELETE /sessions/{cameraId}/force`: maintenance-only whole-camera stop; never used for normal viewer cleanup.
 
-Session states are `STOPPED`, `STARTING`, `LIVE`, `RECONNECTING`, `COMPLETED`, and `ERROR`. Frame reads use `409 AI_PREVIEW_NOT_RUNNING` or `503 AI_FRAME_NOT_READY` when appropriate. Unexpected errors return only `AI_PREVIEW_FAILED`; camera credentials and authenticated stream URLs are never echoed.
+Successful viewer Start/attach returns an opaque `viewer_lease_id`. Missing lease headers return `AI_VIEWER_LEASE_REQUIRED`; stale or replaced-generation leases return `AI_VIEWER_LEASE_EXPIRED`; a conflicting active preview configuration returns `AI_PREVIEW_CONFIGURATION_CONFLICT`. Session states are `STOPPED`, `STARTING`, `LIVE`, `RECONNECTING`, `COMPLETED`, and `ERROR`. Frame reads use `409 AI_PREVIEW_NOT_RUNNING` or `503 AI_FRAME_NOT_READY` when appropriate. Unexpected errors return only `AI_PREVIEW_FAILED`; camera credentials, authenticated stream URLs, service keys and other viewer leases are never echoed.
 
 `POST /frame-health` is called only by the backend health worker. It accepts one bounded encoded frame and returns whole-camera visual issue codes (`CAMERA_VIEW_BLOCKED`, `CAMERA_VIEW_BLURRED`, or `CAMERA_FRAME_INVALID`). It downsizes before deterministic OpenCV checks and does not load YOLO or use the GPU. Darkness is intentionally not classified. `CAMERA_VIEW_FROZEN` remains a supported health-event contract but this endpoint does not guess frozen state from an empty/static supermarket scene; a future source adapter must supply reliable freshness/sequence metadata.
 
-The native service runs one active GPU session at a time. Frames downscale to `AI_MAX_FRAME_DIMENSION` (1280 by default), OpenCV open/read calls use `AI_FRAME_TIMEOUT_SECONDS`, and a session self-stops after `AI_SESSION_IDLE_TIMEOUT_SECONDS` without status/frame polling. Preview-only lease renews on viewer access. Monitoring lease renews **only** on owner measurement reads (default 30 seconds); viewer access cannot keep an abandoned monitoring owner alive. These limits protect the laptop if the browser closes or authentication expires.
+The service runs one shared worker per active camera and allows at most two active camera workers (`AI_MAX_ACTIVE_CAMERA_SESSIONS=2`, valid range `1..2`). Any number of authenticated viewers can attach to the same camera worker; releasing one viewer never interrupts the others. Each active camera owns an independent reader, YOLO inference context, ByteTrack state and latest-frame buffer. Track IDs are transient camera/session-local values: there is no cross-camera re-identification, deduplication or track persistence, so the same numeric ID on two cameras represents unrelated tracks.
+
+Lease/capacity state is process-local, so production must keep exactly one Uvicorn worker. Frames downscale to `AI_MAX_FRAME_DIMENSION` (1280 by default), OpenCV open/read calls use `AI_FRAME_TIMEOUT_SECONDS`, and a preview-owned worker self-stops after its final viewer lease expires or is released. Monitoring ownership renews **only** on owner measurement reads; viewer access cannot keep an abandoned monitoring owner alive. Docker Compose supplies the non-secret limit with `AI_MAX_ACTIVE_CAMERA_SESSIONS=${AI_MAX_ACTIVE_CAMERA_SESSIONS:-2}`; do not place camera credentials or the internal service key in the compose file.
 
 ## IP Webcam prerequisite
 
