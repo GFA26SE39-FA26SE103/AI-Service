@@ -19,9 +19,11 @@ from app.schemas import FrameHealthResponse, SessionStatusResponse, StartSession
 from app.session_manager import (
     FrameNotReadyError,
     SessionCapacityError,
+    SessionConfigurationConflictError,
     SessionManager,
     SessionNotRunningError,
     SessionOwnershipError,
+    ViewerLeaseError,
 )
 from app.settings import Settings
 
@@ -58,6 +60,7 @@ def create_app(settings: Settings | None = None, session_manager: Any | None = N
         reconnect_attempts=resolved_settings.reconnect_attempts,
         reconnect_delay_seconds=resolved_settings.reconnect_delay_seconds,
         session_idle_timeout_seconds=resolved_settings.session_idle_timeout_seconds,
+        max_active_camera_sessions=resolved_settings.max_active_camera_sessions,
         max_observation_gap_ms=resolved_settings.max_observation_gap_ms,
         monitoring_tracker_factory=lambda request: MonitoringFrameTracker(request,resolved_settings.jpeg_quality,resolved_settings.max_frame_dimension),
     )
@@ -79,6 +82,15 @@ def create_app(settings: Settings | None = None, session_manager: Any | None = N
             raise ApiError(401, "AI_SERVICE_UNAUTHORIZED", "AI service authentication failed.")
 
     protected = [Depends(require_internal_key)]
+
+    def require_viewer_lease(viewer_lease_id: UUID | None) -> UUID:
+        if viewer_lease_id is None:
+            raise ApiError(
+                422,
+                "AI_VIEWER_LEASE_REQUIRED",
+                "X-AI-Viewer-Lease header is required.",
+            )
+        return viewer_lease_id
     frame_health = FrameHealthAnalyzer(
         blur_variance_threshold=resolved_settings.health_blur_variance_threshold,
         blocked_stddev_threshold=resolved_settings.health_blocked_stddev_threshold,
@@ -99,6 +111,22 @@ def create_app(settings: Settings | None = None, session_manager: Any | None = N
     @app.exception_handler(SessionNotRunningError)
     async def handle_not_running(_request,_error):
         return _error_response(409,"AI_PREVIEW_NOT_RUNNING","AI session is not running.")
+
+    @app.exception_handler(ViewerLeaseError)
+    async def handle_viewer_lease(_request, _error):
+        return _error_response(
+            409,
+            "AI_VIEWER_LEASE_EXPIRED",
+            "AI viewer lease is missing or expired.",
+        )
+
+    @app.exception_handler(SessionConfigurationConflictError)
+    async def handle_configuration_conflict(_request, _error):
+        return _error_response(
+            409,
+            "AI_PREVIEW_CONFIGURATION_CONFLICT",
+            "AI preview is already running with different camera configuration.",
+        )
 
     @app.post("/monitoring/sessions/{camera_id}/start",response_model=SessionStatusResponse,dependencies=protected)
     async def start_monitoring(camera_id: UUID,body: StartMonitoringRequest):
@@ -183,13 +211,27 @@ def create_app(settings: Settings | None = None, session_manager: Any | None = N
         response_model=SessionStatusResponse,
         dependencies=protected,
     )
-    async def session_status(camera_id: UUID) -> SessionStatusResponse:
-        return await manager.status(camera_id)
+    async def session_status(
+        camera_id: UUID,
+        viewer_lease_id: UUID | None = Header(
+            default=None, alias="X-AI-Viewer-Lease"
+        ),
+    ) -> SessionStatusResponse:
+        return await manager.status(camera_id, require_viewer_lease(viewer_lease_id))
 
-    @app.get("/sessions/{camera_id}/frame", dependencies=protected)
-    async def session_frame(camera_id: UUID) -> Response:
+    @app.get(
+        "/sessions/{camera_id}/frame", dependencies=protected, deprecated=True
+    )
+    async def session_frame(
+        camera_id: UUID,
+        viewer_lease_id: UUID | None = Header(
+            default=None, alias="X-AI-Viewer-Lease"
+        ),
+    ) -> Response:
         try:
-            jpeg = await manager.frame(camera_id)
+            jpeg = await manager.frame(
+                camera_id, require_viewer_lease(viewer_lease_id)
+            )
         except SessionNotRunningError as error:
             raise ApiError(
                 409, "AI_PREVIEW_NOT_RUNNING", "AI preview is not running."
@@ -205,11 +247,19 @@ def create_app(settings: Settings | None = None, session_manager: Any | None = N
     @app.get("/sessions/{camera_id}/frame/next", dependencies=protected)
     async def next_session_frame(
         camera_id: UUID,
+        viewer_lease_id: UUID | None = Header(
+            default=None, alias="X-AI-Viewer-Lease"
+        ),
         after_sequence: int = Query(default=0, ge=0),
         after_session_id: UUID | None = None,
     ) -> Response:
         try:
-            frame = await manager.next_frame(camera_id, after_sequence, after_session_id)
+            frame = await manager.next_frame(
+                camera_id,
+                require_viewer_lease(viewer_lease_id),
+                after_sequence,
+                after_session_id,
+            )
         except SessionNotRunningError as error:
             raise ApiError(409, "AI_PREVIEW_NOT_RUNNING", "AI preview is not running.") from error
         if frame is None:
@@ -225,13 +275,36 @@ def create_app(settings: Settings | None = None, session_manager: Any | None = N
             },
         )
 
-    @app.delete(
-        "/sessions/{camera_id}",
+    @app.post(
+        "/sessions/{camera_id}/viewers/attach",
         response_model=SessionStatusResponse,
         dependencies=protected,
     )
-    async def stop_session(camera_id: UUID) -> SessionStatusResponse:
-        return await manager.stop(camera_id)
+    async def attach_viewer(camera_id: UUID) -> SessionStatusResponse:
+        return await manager.attach_viewer(camera_id)
+
+    @app.delete(
+        "/sessions/{camera_id}/viewer",
+        response_model=SessionStatusResponse,
+        dependencies=protected,
+    )
+    async def release_viewer(
+        camera_id: UUID,
+        viewer_lease_id: UUID | None = Header(
+            default=None, alias="X-AI-Viewer-Lease"
+        ),
+    ) -> SessionStatusResponse:
+        return await manager.release_viewer(
+            camera_id, require_viewer_lease(viewer_lease_id)
+        )
+
+    @app.delete(
+        "/sessions/{camera_id}/force",
+        response_model=SessionStatusResponse,
+        dependencies=protected,
+    )
+    async def force_stop_session(camera_id: UUID) -> SessionStatusResponse:
+        return await manager.force_stop(camera_id)
 
     return app
 
