@@ -20,7 +20,7 @@ From `setup/ai-service`:
 & '..\.venv\Scripts\python.exe' -m pytest -q -p no:cacheprovider --basetemp .superpowers/tmp-mf02-tests
 ```
 
-Validated environment: Python 3.11.16, PyTorch 2.7.1+cu118, CUDA available. The dependency check reported 10 packages satisfied. Final AI suite: `88 passed, 1 skipped, 1 warning`; the skip is the opt-in live-camera test and the warning is documented below.
+Validated environment: Python 3.11.16, PyTorch 2.7.1+cu118, CUDA available. The dependency check reported 10 packages satisfied. Final AI suite: `91 passed, 1 skipped, 1 warning`; the skip is the opt-in live-camera test and the warning is documented below.
 
 ## Build the local fallback clip
 

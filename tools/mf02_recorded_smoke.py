@@ -33,6 +33,7 @@ def summarize_batches(
     warning_threshold: int=3,
     critical_threshold: int=5,
 ) -> dict[str,object]:
+    state_value=state.value if isinstance(state,SessionState) else str(state)
     sequences=[batch.sequence for batch in batches]
     expected=list(range(sequences[0],sequences[-1]+1)) if sequences else []
     sequence_contiguous=bool(sequences) and sequences==expected
@@ -58,11 +59,12 @@ def summarize_batches(
         and sequence_contiguous
         and counts_valid
         and fingerprint_consistent
+        and state_value in (SessionState.LIVE.value,SessionState.COMPLETED.value)
     )
     return {
         "ok":healthy and warning_batches>0 and critical_batches>0,
         "healthy":healthy,
-        "state":state.value if isinstance(state,SessionState) else str(state),
+        "state":state_value,
         "fingerprint":fingerprint,
         "batch_count":len(batches),
         "sequence_first":sequences[0] if sequences else None,

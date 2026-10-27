@@ -65,6 +65,22 @@ def test_summary_marks_gap_or_noncontiguous_sequence_unhealthy(sequences,page_ga
     assert summary["healthy"] is False
 
 
+@pytest.mark.parametrize("state",[SessionState.ERROR,SessionState.STOPPED,SessionState.RECONNECTING])
+def test_summary_rejects_failed_terminal_state_after_thresholds(state):
+    session_id=uuid4(); continuity_id=uuid4()
+    batches=[
+        batch(1,4,3,session_id=session_id,continuity_id=continuity_id),
+        batch(2,6,5,session_id=session_id,continuity_id=continuity_id),
+    ]
+
+    summary=summarize_batches(batches,state,"mf02-demo",False)
+
+    assert summary["warning_reached"] is True
+    assert summary["critical_reached"] is True
+    assert summary["healthy"] is False
+    assert summary["ok"] is False
+
+
 @pytest.mark.asyncio
 async def test_cli_reports_unmet_threshold_without_echoing_video_path(capsys):
     private_path="C:/private/camera-credentials/demo-secret.mp4"
