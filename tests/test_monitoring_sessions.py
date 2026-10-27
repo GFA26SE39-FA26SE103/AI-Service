@@ -118,6 +118,41 @@ async def test_reconnect_keeps_order_but_resets_tracking_continuity():
 
 
 @pytest.mark.asyncio
+async def test_disconnect_emits_no_synthetic_zero_measurement():
+    factories=RecordingFactories.with_sequences([(True,frame(3)),(False,None)])
+
+    class NonZeroMonitoringFake(MonitoringFake):
+        def process(self,value,elapsed_ms,continuity_id):
+            return MonitoringFrameResult(value,[ZoneMeasurement(zone_id=z.zone_id,config_id=z.config_id,config_version=z.config_version,people_count=4,queue_count=3) for z in self.zones],"confidence:0.5")
+
+    manager=SessionManager(
+        factories.reader_factory,
+        factories.tracker_factory,
+        monitoring_tracker_factory=NonZeroMonitoringFake,
+        reconnect_delay_seconds=.5,
+    )
+    camera=uuid4(); body=request()
+    try:
+        await manager.start_monitoring(camera,body)
+        async with asyncio.timeout(3):
+            while manager.status_now(camera).state!=SessionState.RECONNECTING:
+                await asyncio.sleep(.01)
+
+        page=await manager.measurements(camera,body.owner_id,None,0,64)
+
+        assert len(page.batches)==1
+        assert page.batches[0].zones[0].people_count==4
+        assert page.batches[0].zones[0].queue_count==3
+        assert all(
+            zone.people_count!=0 or zone.queue_count!=0
+            for batch in page.batches
+            for zone in batch.zones
+        )
+    finally:
+        await manager.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_preview_and_monitoring_workers_share_same_two_camera_capacity():
     factories=RecordingFactories.with_sequences([(True,frame(51))],[(True,frame(52))],[(True,frame(53))])
     manager=SessionManager(
