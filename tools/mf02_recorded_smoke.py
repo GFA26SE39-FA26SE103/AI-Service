@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import logging
 from datetime import datetime,timezone
 from pathlib import Path
 from typing import Awaitable,Callable,Sequence
@@ -167,7 +168,13 @@ async def cli_async(
 ) -> int:
     try:
         options=_parser().parse_args(argv)
-        result=await runner(options)
+        ultralytics_logger=logging.getLogger("ultralytics")
+        previous_level=ultralytics_logger.level
+        ultralytics_logger.setLevel(logging.ERROR)
+        try:
+            result=await runner(options)
+        finally:
+            ultralytics_logger.setLevel(previous_level)
         public={key:result[key] for key in _PUBLIC_SUMMARY_KEYS if key in result}
         if not public.get("healthy"):
             public["ok"]=False

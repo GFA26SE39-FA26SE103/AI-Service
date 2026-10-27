@@ -86,6 +86,8 @@ Preview-only still does detection/tracking. The monitoring protocol below adds R
 
 ## BE-owned monitoring protocol v1 (03/10/2026)
 
+The current MF-02 Lane B validation, deterministic clip recipe, sanitized GPU smoke command, and Backend bridge status are recorded in [docs/MF02_LANE_B_RUNBOOK.md](docs/MF02_LANE_B_RUNBOOK.md).
+
 - `POST /monitoring/sessions/{camera_id}/start`: authenticated internal request with owner UUID, configuration fingerprint and zone contexts (config ID/versionUTC, normalized ROI, confidence, queue_enabled). Credentials only in this private start body; never in status/measurements/errors.
 - `GET .../measurements`: `X-AI-Monitoring-Owner`, `after_session_id`, `after_sequence`, `limit`1–64. Ordered batches have session/continuity IDs, source elapsed ms, capturedUTC, fingerprint and aggregate people/queue counts only. Bounded256 buffer reports `gap` on overrun/session mismatch. Do not poll only latest counts for sustained conditions.
 - `DELETE /monitoring/sessions/{camera_id}`: owner-only stop. Existing `X-AI-Service-Key` applies. No FE direct access.
