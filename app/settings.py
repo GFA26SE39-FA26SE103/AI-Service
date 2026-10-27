@@ -16,7 +16,17 @@ class Settings(BaseSettings):
 
     host: str = "127.0.0.1"
     port: int = 8090
-    recorded_root: Path = Path(__file__).resolve().parents[3] / "Backend" / "Back-End" / "src" / "Supermarket.Api" / ".local" / "videos"
+    recorded_root: Path = Field(
+        default_factory=lambda: (
+            Path(__file__).resolve().parents[3]
+            / "Backend"
+            / "Back-End"
+            / "src"
+            / "Supermarket.Api"
+            / ".local"
+            / "videos"
+        )
+    )
     internal_service_key: SecretStr | None = None
     model_path: str = "../yolo26s.pt"
     tracker: str = "bytetrack.yaml"
