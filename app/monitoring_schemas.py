@@ -57,6 +57,7 @@ class CheckoutMappingInput(BaseModel):
     mapping_version: AwareDatetime
     lane_roi: list[Point]=Field(min_length=3,max_length=1000)
     staff_roi: list[Point]=Field(min_length=3,max_length=1000)
+    service_roi: list[Point]|None=Field(default=None,min_length=3,max_length=1000)
     is_queue_source: bool
     confidence: Annotated[float,Field(ge=0,le=1)]
 
@@ -66,12 +67,13 @@ class CheckoutMappingInput(BaseModel):
         if value.int==0: raise ValueError("Checkout identity required")
         return value
 
-    @field_validator("lane_roi","staff_roi")
+    @field_validator("lane_roi","staff_roi","service_roi")
     @classmethod
-    def valid_roi(cls,points: list[Point]) -> list[Point]: return _valid_roi(points)
+    def valid_roi(cls,points: list[Point]|None) -> list[Point]|None: return _valid_roi(points) if points is not None else None
 
     @model_validator(mode="after")
     def valid_versions(self):
+        if self.is_queue_source and self.service_roi is None: raise ValueError("Service ROI required for queue source")
         if self.config_version.utcoffset()!=timedelta(0) or self.mapping_version.utcoffset()!=timedelta(0):
             raise ValueError("UTC checkout versions required")
         return self
@@ -114,6 +116,7 @@ class CheckoutMeasurement(BaseModel):
     mapping_version: AwareDatetime
     person_present: bool|None
     queue_count: Annotated[int,Field(ge=0,strict=True)]|None
+    max_wait_seconds: Annotated[float,Field(ge=0)]|None=None
     usable: bool
 
 class MeasurementBatch(BaseModel):

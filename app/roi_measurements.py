@@ -55,11 +55,15 @@ class CheckoutRoiMeasurements:
                and t.track_id>0 and math.isfinite(t.score) and mapping.confidence<=t.score<=1}
         present=any(contains_footpoint(mapping.staff_roi,t.bbox) for t in valid.values())
         count=None
+        max_wait=None
         if mapping.is_queue_source:
-            current={key for key,t in valid.items() if contains_footpoint(mapping.lane_roi,t.bbox)}
+            current={key for key,t in valid.items() if contains_footpoint(mapping.lane_roi,t.bbox)
+                     and not contains_footpoint(mapping.service_roi,t.bbox)}
             old=self._starts.get(mapping.mapping_id,{})
             starts={key:old.get(key,elapsed_ms) for key in current}
             self._starts[mapping.mapping_id]=starts
             count=sum(elapsed_ms-start>=5000 for start in starts.values())
+            max_wait=max((elapsed_ms-start for start in starts.values()),default=0)/1000
         return CheckoutMeasurement(mapping_id=mapping.mapping_id,counter_id=mapping.counter_id,config_id=mapping.config_id,
-            config_version=mapping.config_version,mapping_version=mapping.mapping_version,person_present=present,queue_count=count,usable=True)
+            config_version=mapping.config_version,mapping_version=mapping.mapping_version,person_present=present,
+            queue_count=count,max_wait_seconds=max_wait,usable=True)

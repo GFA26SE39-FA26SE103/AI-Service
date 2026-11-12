@@ -7,13 +7,17 @@ from app.monitoring_schemas import CheckoutMappingInput
 from app.roi_measurements import CheckoutRoiMeasurements
 
 def test_checkout_queue_dwell_and_staff_presence_are_independent():
-    mapping=CheckoutMappingInput(**checkout_mapping(staff_roi=[dict(x=0,y=0),dict(x=.4,y=0),dict(x=.4,y=1),dict(x=0,y=1)]))
+    mapping=CheckoutMappingInput(**checkout_mapping(staff_roi=[dict(x=0,y=0),dict(x=.4,y=0),dict(x=.4,y=1),dict(x=0,y=1)],
+        service_roi=[dict(x=.9,y=0),dict(x=1,y=0),dict(x=1,y=1),dict(x=.9,y=1)]))
     epoch=uuid4(); measurements=CheckoutRoiMeasurements()
     lane=TrackedPerson(1,.9,(.6,.2,.8,.8),True)
     staff=TrackedPerson(2,.9,(.1,.2,.3,.8),True)
     first=measurements.observe(mapping,[lane,staff],0,epoch)
     assert first.person_present is True and first.queue_count==0
     assert measurements.observe(mapping,[lane],5000,epoch).queue_count==1
+    assert measurements.observe(mapping,[lane],5000,epoch).max_wait_seconds==5
+    served=TrackedPerson(1,.9,(.9,.2,1,.8),True)
+    assert measurements.observe(mapping,[served],5100,epoch).max_wait_seconds==0
     assert measurements.observe(mapping,[lane],5001,uuid4()).queue_count==0
     other=CheckoutMappingInput(**checkout_mapping(is_queue_source=False))
     assert measurements.observe(other,[],0,epoch).queue_count is None
