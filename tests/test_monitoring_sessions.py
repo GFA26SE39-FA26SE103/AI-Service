@@ -12,7 +12,7 @@ class MonitoringFake(FakeTracker):
     def __init__(self,request): super().__init__(); self.zones=request.zones
     def process(self,value,elapsed_ms,continuity_id):
         return MonitoringFrameResult(value,[ZoneMeasurement(zone_id=z.zone_id,config_id=z.config_id,config_version=z.config_version,people_count=1,queue_count=0) for z in self.zones],"confidence:0.5")
-    def reconfigure(self,zones): self.zones=zones
+    def reconfigure(self,request): self.zones=request.zones
     def reset_tracking(self): pass
 
 def request(**changes):

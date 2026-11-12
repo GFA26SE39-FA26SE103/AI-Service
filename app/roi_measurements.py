@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 import math
 from uuid import UUID
-from app.monitoring_schemas import MonitoringZoneInput,Point,ZoneMeasurement,_on
+from app.monitoring_schemas import CheckoutMappingInput,CheckoutMeasurement,MonitoringZoneInput,Point,ZoneMeasurement,_on
 
 @dataclass(frozen=True)
 class TrackedPerson:
@@ -41,3 +41,25 @@ class RoiMeasurements:
         self._starts[zone.zone_id]=starts
         queued=sum(elapsed_ms-start>=5000 for start in starts.values()) if zone.queue_enabled else 0
         return ZoneMeasurement(zone_id=zone.zone_id,config_id=zone.config_id,config_version=zone.config_version,people_count=len(current),queue_count=queued)
+
+class CheckoutRoiMeasurements:
+    def __init__(self):
+        self._continuity: UUID|None=None
+        self._last_ms: int|None=None
+        self._starts: dict[UUID,dict[int,int]]={}
+
+    def observe(self,mapping: CheckoutMappingInput,tracks: list[TrackedPerson],elapsed_ms: int,continuity_id: UUID) -> CheckoutMeasurement:
+        if self._continuity!=continuity_id or (self._last_ms is not None and elapsed_ms<self._last_ms): self._starts.clear()
+        self._continuity=continuity_id; self._last_ms=elapsed_ms
+        valid={t.track_id:t for t in tracks if t.observed and isinstance(t.track_id,int) and not isinstance(t.track_id,bool)
+               and t.track_id>0 and math.isfinite(t.score) and mapping.confidence<=t.score<=1}
+        present=any(contains_footpoint(mapping.staff_roi,t.bbox) for t in valid.values())
+        count=None
+        if mapping.is_queue_source:
+            current={key for key,t in valid.items() if contains_footpoint(mapping.lane_roi,t.bbox)}
+            old=self._starts.get(mapping.mapping_id,{})
+            starts={key:old.get(key,elapsed_ms) for key in current}
+            self._starts[mapping.mapping_id]=starts
+            count=sum(elapsed_ms-start>=5000 for start in starts.values())
+        return CheckoutMeasurement(mapping_id=mapping.mapping_id,counter_id=mapping.counter_id,config_id=mapping.config_id,
+            config_version=mapping.config_version,mapping_version=mapping.mapping_version,person_present=present,queue_count=count,usable=True)

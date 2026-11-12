@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from types import SimpleNamespace
 from uuid import UUID
 import math
@@ -8,14 +8,15 @@ from ultralytics import YOLO
 from ultralytics.trackers.byte_tracker import BYTETracker
 from ultralytics.utils import YAML
 from ultralytics.utils.checks import check_yaml
-from app.monitoring_schemas import MonitoringZoneInput,StartMonitoringRequest,ZoneMeasurement
-from app.roi_measurements import RoiMeasurements,TrackedPerson
+from app.monitoring_schemas import CheckoutMeasurement,StartMonitoringRequest,ZoneMeasurement
+from app.roi_measurements import CheckoutRoiMeasurements,RoiMeasurements,TrackedPerson
 
 @dataclass
 class MonitoringFrameResult:
     annotated_frame: np.ndarray
     measurements: list[ZoneMeasurement]
     annotation_context: str
+    checkouts: list[CheckoutMeasurement]=field(default_factory=list)
 
 class MonitoringFrameTracker:
     def __init__(self,request: StartMonitoringRequest,jpeg_quality: int=85,max_frame_dimension: int=1280,*,detector=None,context_factory=None):
@@ -25,14 +26,18 @@ class MonitoringFrameTracker:
         self._context_factory=context_factory or BYTETracker
         self._args=SimpleNamespace(**YAML.load(check_yaml(request.tracker)))
         if self._args.tracker_type!="bytetrack": raise ValueError("AI_TRACKER_UNSUPPORTED")
-        self.reconfigure(request.zones)
+        self.reconfigure(request)
 
-    def reconfigure(self,zones: list[MonitoringZoneInput]):
-        self._zones=zones
-        self._contexts={confidence:self._context_factory(self._args) for confidence in sorted({z.confidence for z in zones})}
+    def reconfigure(self,request: StartMonitoringRequest):
+        self._request=request
+        self._zones=request.zones
+        self._checkout_mappings=request.checkout_mappings
+        confidences={z.confidence for z in self._zones}|{m.confidence for m in self._checkout_mappings}
+        self._contexts={confidence:self._context_factory(self._args) for confidence in sorted(confidences)}
         self._measurements=RoiMeasurements()
+        self._checkout_measurements=CheckoutRoiMeasurements()
 
-    def reset_tracking(self): self.reconfigure(self._zones)
+    def reset_tracking(self): self.reconfigure(self._request)
 
     def process(self,frame: np.ndarray,elapsed_ms: int,continuity_id: UUID) -> MonitoringFrameResult:
         height,width=frame.shape[:2]
@@ -58,6 +63,8 @@ class MonitoringFrameTracker:
                 tracks.append(TrackedPerson(int(row[4]),float(row[5]),(float(row[0])/width,float(row[1])/height,float(row[2])/width,float(row[3])/height),True))
             tracks_by_conf[confidence]=tracks
         measurements=[self._measurements.observe(zone,tracks_by_conf[zone.confidence],elapsed_ms,continuity_id) for zone in self._zones]
+        checkouts=[self._checkout_measurements.observe(mapping,tracks_by_conf[mapping.confidence],elapsed_ms,continuity_id)
+                   for mapping in self._checkout_mappings]
         lowest=min(self._contexts); label=f"confidence:{lowest:g}"
         annotated=frame.copy()
         for track in tracks_by_conf[lowest]:
@@ -66,7 +73,7 @@ class MonitoringFrameTracker:
             cv2.rectangle(annotated,(left,top),(right,bottom),(255,0,0),2)
             cv2.putText(annotated,f"id:{track.track_id} person {track.score:.2f}",(left,max(16,top-5)),cv2.FONT_HERSHEY_SIMPLEX,.6,(255,0,0),2)
         cv2.putText(annotated,label,(8,22),cv2.FONT_HERSHEY_SIMPLEX,.5,(255,255,255),1)
-        return MonitoringFrameResult(annotated,measurements,label)
+        return MonitoringFrameResult(annotated,measurements,label,checkouts)
 
     def encode_jpeg(self,frame: np.ndarray) -> bytes:
         ok,encoded=cv2.imencode(".jpg",frame,[int(cv2.IMWRITE_JPEG_QUALITY),self._jpeg_quality])

@@ -176,7 +176,7 @@ class SessionManager:
                                 existing.monitoring_request=request.model_copy(deep=True)
                                 existing.pending_request=None
                                 existing.continuity_id=uuid4()
-                                if existing.buffer is not None: existing.buffer.clear()
+                                if existing.buffer is not None: existing.buffer.configure(request.protocol_version)
                                 existing.status.configuration_fingerprint=request.configuration_fingerprint
                                 existing.status.annotation_context=None
                             else:
@@ -190,7 +190,7 @@ class SessionManager:
                 now=_utc_now(); session_id=uuid4()
                 session=_Session(status=SessionStatusResponse(camera_id=camera_id,state=SessionState.STARTING,started_at=now,updated_at=now,
                     session_id=session_id,purpose="MONITORING",configuration_fingerprint=request.configuration_fingerprint),cancel=asyncio.Event(),
-                    monitoring_request=request.model_copy(deep=True),owner_access=asyncio.get_running_loop().time(),buffer=MeasurementBuffer(session_id),continuity_id=uuid4())
+                    monitoring_request=request.model_copy(deep=True),owner_access=asyncio.get_running_loop().time(),buffer=MeasurementBuffer(session_id,request.protocol_version),continuity_id=uuid4())
                 self._sessions[camera_id]=session
                 session.task=asyncio.create_task(self._run(camera_id,session,request),name=f"ai-monitoring-{camera_id}")
                 return session.status.model_copy(deep=True)
@@ -332,11 +332,11 @@ class SessionManager:
                         # Requests merely queue a new snapshot; no concurrent tracker mutation.
                         if session.pending_request:
                             request=session.pending_request; session.pending_request=None
-                            await asyncio.to_thread(tracker.reconfigure,request.zones)
+                            await asyncio.to_thread(tracker.reconfigure,request)
                             session.monitoring_request=request
                             session.status.configuration_fingerprint=request.configuration_fingerprint
                             session.continuity_id=uuid4()
-                            session.buffer.clear()
+                            session.buffer.configure(request.protocol_version)
                         ok, frame = await asyncio.to_thread(reader.read)
                         if not ok or frame is None:
                             if request.source_type == "RECORDED":
@@ -361,9 +361,10 @@ class SessionManager:
                         session.latest_jpeg = encoded
                         session.status.frame_sequence += 1
                         if session.monitoring_request:
-                            session.buffer.append(MeasurementBatch(session_id=session.status.session_id,continuity_id=session.continuity_id,
+                            session.buffer.append(MeasurementBatch(protocol_version=request.protocol_version,session_id=session.status.session_id,continuity_id=session.continuity_id,
                                 sequence=session.status.frame_sequence,captured_at=_utc_now(),source_elapsed_ms=source_time.elapsed_ms,
-                                configuration_fingerprint=request.configuration_fingerprint,zones=result.measurements))
+                                configuration_fingerprint=request.configuration_fingerprint,zones=result.measurements,
+                                checkouts=result.checkouts if request.protocol_version==2 else []))
                         self._set_state(session, SessionState.LIVE)
                         async with session.frame_condition:
                             session.frame_condition.notify_all()

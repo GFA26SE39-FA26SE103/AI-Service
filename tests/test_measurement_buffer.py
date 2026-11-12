@@ -15,3 +15,15 @@ def test_bounded_ordered_cursor_reports_gaps_and_is_repeatable():
     assert not buffer.read(108,64,SessionState.LIVE).gap
     assert buffer.read(300,64,SessionState.COMPLETED).batches==[]
     with pytest.raises(ValueError): buffer.read(0,65,SessionState.LIVE)
+
+def test_reconfigure_switches_protocol_and_discards_old_batches():
+    session=uuid4(); buffer=MeasurementBuffer(session)
+    buffer.append(MeasurementBatch(session_id=session,continuity_id=session,sequence=1,
+        captured_at=datetime.now(timezone.utc),source_elapsed_ms=0,configuration_fingerprint="old",zones=[]))
+    buffer.configure(2)
+    empty=buffer.read(1,64,SessionState.LIVE)
+    assert empty.protocol_version==2 and empty.batches==[]
+    buffer.append(MeasurementBatch(protocol_version=2,session_id=session,continuity_id=uuid4(),sequence=2,
+        captured_at=datetime.now(timezone.utc),source_elapsed_ms=0,configuration_fingerprint="new",zones=[],checkouts=[]))
+    page=buffer.read(1,64,SessionState.LIVE)
+    assert page.protocol_version==2 and [batch.sequence for batch in page.batches]==[2]
