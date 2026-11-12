@@ -8,7 +8,7 @@ def checkout_mapping(**changes):
     points=[dict(x=0,y=0),dict(x=1,y=0),dict(x=1,y=1),dict(x=0,y=1)]
     data=dict(mapping_id=uuid4(),counter_id=uuid4(),zone_id=uuid4(),config_id=uuid4(),
               config_version=datetime.now(timezone.utc),mapping_version=datetime.now(timezone.utc),
-              lane_roi=points,staff_roi=points,is_queue_source=True,confidence=.5)
+              lane_roi=points,staff_roi=points,service_roi=points,is_queue_source=True,confidence=.5)
     return data|changes
 
 def test_checkout_v2_accepts_checkout_only_and_rejects_invalid_sources():
@@ -19,7 +19,8 @@ def test_checkout_v2_accepts_checkout_only_and_rejects_invalid_sources():
     for changes in [dict(checkout_mappings=[]),dict(checkout_mappings=[mapping,mapping]),
                     dict(checkout_mappings=[checkout_mapping(lane_roi=[dict(x=0,y=0)])]),
                     dict(checkout_mappings=[checkout_mapping(mapping_version=datetime.now())]),
-                    dict(checkout_mappings=[checkout_mapping(counter_id=UUID(int=0))])]:
+                    dict(checkout_mappings=[checkout_mapping(counter_id=UUID(int=0))]),
+                    dict(checkout_mappings=[checkout_mapping(service_roi=None)])]:
         with pytest.raises(ValidationError): StartMonitoringRequest(**(base|changes))
     with pytest.raises(ValidationError): StartMonitoringRequest(**(base|dict(protocol_version=1,zones=[zone()],checkout_mappings=[mapping])))
 
