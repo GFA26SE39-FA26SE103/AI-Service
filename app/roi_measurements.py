@@ -41,7 +41,7 @@ def _contains_person_anchor(
 class RoiMeasurements:
     def __init__(self):
         self._continuity: UUID|None=None
-        self._starts: dict[UUID,dict[int,int]]={}
+        self._starts: dict[tuple[UUID,int],dict[int,int]]={}
         self._last_ms: int|None=None
 
     def reset(self):
@@ -50,17 +50,19 @@ class RoiMeasurements:
     def observe(self,zone: MonitoringZoneInput,tracks: list[TrackedPerson],elapsed_ms: int,continuity_id: UUID) -> ZoneMeasurement:
         if self._continuity!=continuity_id or (self._last_ms is not None and elapsed_ms<self._last_ms): self.reset()
         self._continuity=continuity_id; self._last_ms=elapsed_ms
-        current = {
-            t.track_id for t in tracks
-            if t.observed and isinstance(t.track_id, int) and not isinstance(t.track_id, bool)
-            and t.track_id > 0 and math.isfinite(t.score) and zone.confidence <= t.score <= 1
-            and _contains_person_anchor(zone.roi_polygon, t.bbox, use_visible_center_at_bottom=True)
-        }
-        previous=self._starts.get(zone.zone_id,{})
-        starts={track_id:previous.get(track_id,elapsed_ms) for track_id in current}
-        self._starts[zone.zone_id]=starts
-        queued=sum(elapsed_ms-start>=5000 for start in starts.values()) if zone.queue_enabled else 0
-        return ZoneMeasurement(zone_id=zone.zone_id,config_id=zone.config_id,config_version=zone.config_version,people_count=len(current),queue_count=queued)
+        counts=[]
+        for index,roi in enumerate([zone.roi_polygon,*zone.additional_roi_polygons]):
+            current={t.track_id for t in tracks
+                     if t.observed and isinstance(t.track_id,int) and not isinstance(t.track_id,bool)
+                     and t.track_id>0 and math.isfinite(t.score) and zone.confidence<=t.score<=1
+                     and _contains_person_anchor(roi,t.bbox,use_visible_center_at_bottom=True)}
+            key=(zone.zone_id,index)
+            previous=self._starts.get(key,{})
+            starts={track_id:previous.get(track_id,elapsed_ms) for track_id in current}
+            self._starts[key]=starts
+            counts.append((len(current),sum(elapsed_ms-start>=5000 for start in starts.values()) if zone.queue_enabled else 0))
+        return ZoneMeasurement(zone_id=zone.zone_id,config_id=zone.config_id,config_version=zone.config_version,
+            people_count=max(c[0] for c in counts),queue_count=max(c[1] for c in counts))
 
 class CheckoutRoiMeasurements:
     def __init__(self):

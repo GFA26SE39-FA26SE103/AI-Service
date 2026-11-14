@@ -27,6 +27,7 @@ class MonitoringZoneInput(BaseModel):
     config_id: UUID
     config_version: AwareDatetime
     roi_polygon: list[Point]=Field(min_length=3,max_length=1000)
+    additional_roi_polygons: list[list[Point]]=Field(default_factory=list,max_length=15)
     confidence: Annotated[float,Field(ge=0,le=1)]
     queue_enabled: bool=False
 
@@ -34,6 +35,9 @@ class MonitoringZoneInput(BaseModel):
     def valid(self):
         if self.config_version.utcoffset()!=timedelta(0): raise ValueError("UTC configuration version required")
         _valid_roi(self.roi_polygon)
+        for roi in self.additional_roi_polygons:
+            if not 3<=len(roi)<=1000: raise ValueError("Invalid additional ROI size")
+            _valid_roi(roi)
         return self
 
 def _valid_roi(points: list[Point]) -> list[Point]:
@@ -88,6 +92,7 @@ class StartMonitoringRequest(StartSessionRequest):
     @model_validator(mode="after")
     def unique_zones(self):
         if len({z.zone_id for z in self.zones})!=len(self.zones): raise ValueError("Duplicate zones")
+        if sum(1+len(z.additional_roi_polygons) for z in self.zones)>128: raise ValueError("Too many monitoring ROIs")
         if self.protocol_version==1 and (not self.zones or self.checkout_mappings): raise ValueError("Invalid v1 monitoring configuration")
         if self.protocol_version==2 and not self.checkout_mappings: raise ValueError("Checkout mappings required")
         if len({m.mapping_id for m in self.checkout_mappings})!=len(self.checkout_mappings): raise ValueError("Duplicate checkout mappings")

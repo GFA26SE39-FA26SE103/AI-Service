@@ -42,6 +42,17 @@ def test_zone_uses_visible_center_for_bottom_cropped_person():
     assert measurements.observe(monitored_zone, [cropped], 5009, epoch).queue_count == 0
     assert measurements.observe(monitored_zone, [cropped], 5010, epoch).queue_count == 1
 
+def test_multiple_rois_use_largest_individual_count_not_sum():
+    left=[dict(x=0,y=0),dict(x=.45,y=0),dict(x=.45,y=1),dict(x=0,y=1)]
+    right=[dict(x=.55,y=0),dict(x=1,y=0),dict(x=1,y=1),dict(x=.55,y=1)]
+    monitored=zone(roi_polygon=left,additional_roi_polygons=[right])
+    tracks=[TrackedPerson(1,.9,(.1,.2,.2,.8),True),TrackedPerson(2,.9,(.25,.2,.35,.8),True),
+            TrackedPerson(3,.9,(.65,.2,.75,.8),True),TrackedPerson(4,.9,(.8,.2,.9,.8),True)]
+    measurements=RoiMeasurements(); epoch=uuid4()
+    assert measurements.observe(monitored,tracks,0,epoch).people_count==2
+    result=measurements.observe(monitored,tracks,5000,epoch)
+    assert result.people_count==2 and result.queue_count==2
+
 def test_counts_distinct_current_valid_tracks_and_continuous_queue():
     z=zone(); epoch=uuid4(); measurements=RoiMeasurements()
     inside=TrackedPerson(1,.9,(.1,.1,.3,.8),True)
