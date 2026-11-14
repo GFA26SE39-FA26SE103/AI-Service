@@ -27,6 +27,21 @@ def test_footpoint_includes_boundary_not_box_overlap():
     assert contains_footpoint(roi,(.2,.1,.8,1))
     assert not contains_footpoint(roi,(.2,.1,.8,1.1))
 
+def test_zone_uses_visible_center_for_bottom_cropped_person():
+    monitored_zone = zone(roi_polygon=[
+        dict(x=.25, y=.25), dict(x=.75, y=.25), dict(x=.75, y=.75), dict(x=.25, y=.75),
+    ])
+    epoch = uuid4()
+    measurements = RoiMeasurements()
+    cropped = TrackedPerson(1, .9, (.4, .2, .6, .995), True)
+    full_box = TrackedPerson(2, .9, (.4, .2, .6, .9), True)
+    outside = TrackedPerson(3, .9, (.8, .2, .9, 1), True)
+    assert measurements.observe(monitored_zone, [full_box, outside], 0, epoch).people_count == 0
+    first = measurements.observe(monitored_zone, [cropped], 10, epoch)
+    assert first.people_count == 1 and first.queue_count == 0
+    assert measurements.observe(monitored_zone, [cropped], 5009, epoch).queue_count == 0
+    assert measurements.observe(monitored_zone, [cropped], 5010, epoch).queue_count == 1
+
 def test_counts_distinct_current_valid_tracks_and_continuous_queue():
     z=zone(); epoch=uuid4(); measurements=RoiMeasurements()
     inside=TrackedPerson(1,.9,(.1,.1,.3,.8),True)
