@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import math
+from tempfile import TemporaryDirectory
 from pathlib import Path
 from urllib.parse import quote, urlsplit, urlunsplit
 from urllib.request import url2pathname
@@ -13,6 +14,7 @@ import cv2
 import numpy as np
 
 from app.schemas import StartSessionRequest
+from app.recorded_video_download import download_recorded_video
 
 
 def _authenticated_url(request: StartSessionRequest) -> str:
@@ -26,18 +28,34 @@ def _authenticated_url(request: StartSessionRequest) -> str:
 
 
 class CameraReader:
-    def __init__(self, request: StartSessionRequest, timeout_seconds: float = 5.0, *, recorded_root: Path | None = None) -> None:
+    def __init__(self, request: StartSessionRequest, timeout_seconds: float = 5.0, *,
+                 recorded_root: Path | None = None, recorded_video_base_url: str | None = None,
+                 recorded_service_key: str | None = None) -> None:
         self.frame_interval = 0.0
         self.position_ms: float | None = None
         self.fps: float | None = None
+        self._download: TemporaryDirectory | None = None
         parts = urlsplit(request.stream_url)
         if request.source_type == "RECORDED":
-            if recorded_root is None or parts.scheme != "file" or parts.netloc or parts.query or parts.fragment or request.username or request.password:
+            if request.username or request.password:
                 raise ValueError("AI_RECORDED_VIDEO_INVALID")
-            path = Path(url2pathname(parts.path)).resolve()
-            if not path.is_relative_to(recorded_root.resolve()) or path.suffix.lower() != ".mp4" or not path.is_file():
-                raise ValueError("AI_RECORDED_VIDEO_INVALID")
-            self._capture = cv2.VideoCapture(str(path), cv2.CAP_FFMPEG)
+            if parts.scheme == "https":
+                self._download = TemporaryDirectory(prefix="ai-recorded-")
+                path = Path(self._download.name) / "recording.mp4"
+            else:
+                if recorded_root is None or parts.scheme != "file" or parts.netloc or parts.query or parts.fragment:
+                    raise ValueError("AI_RECORDED_VIDEO_INVALID")
+                path = Path(url2pathname(parts.path)).resolve()
+                if not path.is_relative_to(recorded_root.resolve()) or path.suffix.lower() != ".mp4" or not path.is_file():
+                    raise ValueError("AI_RECORDED_VIDEO_INVALID")
+            try:
+                if self._download is not None:
+                    download_recorded_video(request.stream_url, recorded_video_base_url, recorded_service_key, path)
+                self._capture = cv2.VideoCapture(str(path), cv2.CAP_FFMPEG)
+            except Exception:
+                if self._download is not None:
+                    self._download.cleanup()
+                raise
             fps = self._capture.get(cv2.CAP_PROP_FPS)
             self.fps = fps if math.isfinite(fps) and 1 <= fps <= 240 else None
             self.frame_interval = 1.0 / (fps if math.isfinite(fps) and 1 <= fps <= 240 else 25)
@@ -70,4 +88,8 @@ class CameraReader:
     def close(self) -> None:
         if not self._closed:
             self._closed = True
-            self._capture.release()
+            try:
+                self._capture.release()
+            finally:
+                if self._download is not None:
+                    self._download.cleanup()

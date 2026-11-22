@@ -1,5 +1,8 @@
 import asyncio
+from http.client import HTTPSConnection
+from io import BytesIO
 from pathlib import Path
+from unittest.mock import Mock
 from uuid import uuid4
 
 import cv2
@@ -7,6 +10,7 @@ import numpy as np
 import pytest
 
 from app.camera_reader import CameraReader
+from app.recorded_video_download import download_recorded_video
 from app.schemas import SessionState, StartSessionRequest
 from app.session_manager import SessionManager
 from tests.fakes import FakeTracker
@@ -98,6 +102,41 @@ def test_recorded_reader_rejects_path_outside_storage(tmp_path):
 def test_live_request_cannot_open_local_file(tmp_path):
     with pytest.raises(ValueError, match="AI_SOURCE_INVALID"):
         CameraReader(StartSessionRequest(stream_url=(tmp_path / "sample.mp4").as_uri()))
+
+
+def test_remote_recorded_video_uses_configured_backend_and_releases_temporary_file(tmp_path, monkeypatch):
+    original = tmp_path / "upload.mp4"
+    make_video(original)
+    payload = original.read_bytes()
+    origin = "https://backend.example.test"
+    route = f"/api/cameras/{uuid4()}/recorded-video/content/{uuid4().hex}"
+    response = BytesIO(payload)
+    response.status = 200
+    response.getheader = {"Content-Length": str(len(payload)), "Content-Type": "video/mp4"}.get
+    connection = Mock(spec=HTTPSConnection)
+    connection.getresponse.return_value = response
+    opener = Mock(return_value=connection)
+    monkeypatch.setattr("app.recorded_video_download.http.client.HTTPSConnection", opener)
+
+    with pytest.raises(ValueError, match="AI_RECORDED_VIDEO_INVALID"):
+        download_recorded_video("https://other.example.test" + route, origin, "service-key", tmp_path / "blocked.mp4")
+    opener.assert_not_called()
+
+    reader = CameraReader(
+        StartSessionRequest(stream_url=origin + route, source_type="RECORDED"),
+        recorded_video_base_url=origin,
+        recorded_service_key="service-key",
+    )
+    temp_dir = Path(reader._download.name)
+    try:
+        assert [reader.read()[0] for _ in range(4)] == [True, True, True, False]
+        assert reader.fps == 10
+        connection.request.assert_called_once_with(
+            "GET", route, headers={"X-AI-Service-Key": "service-key", "Accept": "video/mp4"},
+        )
+    finally:
+        reader.close()
+    assert not temp_dir.exists()
 
 
 @pytest.mark.parametrize("uri", ["file://other-host/share/sample.mp4", "http://example.test/video.mp4", "file:///C:/outside.mp4?key=secret", "file:///C:/outside.mp4#fragment"])

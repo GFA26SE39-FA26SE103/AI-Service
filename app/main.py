@@ -55,7 +55,13 @@ def _error_response(status_code: int, code: str, message: str) -> JSONResponse:
 def create_app(settings: Settings | None = None, session_manager: Any | None = None) -> FastAPI:
     resolved_settings = settings or Settings()
     manager = session_manager or SessionManager(
-        lambda request: CameraReader(request, resolved_settings.frame_timeout_seconds, recorded_root=resolved_settings.recorded_root),
+        lambda request: CameraReader(
+            request,
+            resolved_settings.frame_timeout_seconds,
+            recorded_root=resolved_settings.recorded_root,
+            recorded_video_base_url=resolved_settings.recorded_video_base_url,
+            recorded_service_key=resolved_settings.internal_service_key.get_secret_value() if resolved_settings.internal_service_key else None,
+        ),
         lambda request: _frame_tracker(request, resolved_settings),
         reconnect_attempts=resolved_settings.reconnect_attempts,
         reconnect_delay_seconds=resolved_settings.reconnect_delay_seconds,

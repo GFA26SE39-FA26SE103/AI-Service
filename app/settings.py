@@ -28,6 +28,7 @@ class Settings(BaseSettings):
         )
     )
     internal_service_key: SecretStr | None = None
+    recorded_video_base_url: str | None = None
     model_path: str = "../yolo26s.pt"
     tracker: str = "bytetrack.yaml"
     device: str = "cuda:0"

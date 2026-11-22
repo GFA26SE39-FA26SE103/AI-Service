@@ -406,7 +406,10 @@ class SessionManager:
             raise
         except Exception as error:
             code = str(error)
-            session.status.error_code = code if code in ("AI_RECORDED_VIDEO_INVALID", "AI_SOURCE_INVALID","AI_SOURCE_TIME_INVALID","AI_TRACKER_UNSUPPORTED","AI_MONITORING_UNAVAILABLE") else "AI_PREVIEW_FAILED"
+            session.status.error_code = code if code in (
+                "AI_RECORDED_VIDEO_INVALID", "AI_RECORDED_VIDEO_DOWNLOAD_FAILED", "AI_SOURCE_INVALID",
+                "AI_SOURCE_TIME_INVALID", "AI_TRACKER_UNSUPPORTED", "AI_MONITORING_UNAVAILABLE",
+            ) else "AI_PREVIEW_FAILED"
             self._set_state(session, SessionState.ERROR)
         finally:
             self._close_reader(session, session.reader)
