@@ -122,7 +122,14 @@ class CheckoutMeasurement(BaseModel):
     person_present: bool|None
     queue_count: Annotated[int,Field(ge=0,strict=True)]|None
     max_wait_seconds: Annotated[float,Field(ge=0)]|None=None
+    lane_people_count: Annotated[int,Field(ge=0,strict=True)]|None=None
     usable: bool
+
+    @model_validator(mode="after")
+    def queue_is_subset_of_lane(self):
+        if self.lane_people_count is not None and self.queue_count is not None and self.queue_count > self.lane_people_count:
+            raise ValueError("Queue count exceeds checkout lane people count")
+        return self
 
 class MeasurementBatch(BaseModel):
     model_config=ConfigDict(extra="forbid")
