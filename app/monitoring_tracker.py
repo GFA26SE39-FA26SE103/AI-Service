@@ -71,7 +71,7 @@ class MonitoringFrameTracker:
             x1,y1,x2,y2=track.bbox
             left,top,right,bottom=round(x1*width),round(y1*height),round(x2*width),round(y2*height)
             cv2.rectangle(annotated,(left,top),(right,bottom),(255,0,0),2)
-            cv2.putText(annotated,f"id:{track.track_id} person {track.score:.2f}",(left,max(16,top-5)),cv2.FONT_HERSHEY_SIMPLEX,.6,(255,0,0),2)
+            cv2.putText(annotated,f"id:{track.track_id} person {track.score:.2f}",(left,max(12,top-5)),cv2.FONT_HERSHEY_SIMPLEX,.4,(255,0,0),1)
         cv2.putText(annotated,label,(8,22),cv2.FONT_HERSHEY_SIMPLEX,.5,(255,255,255),1)
         return MonitoringFrameResult(annotated,measurements,label,checkouts)
 
